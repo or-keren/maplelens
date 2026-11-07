@@ -12,6 +12,8 @@ DEFAULTS = {
     "jump_factor": 5,
     "boxes": {},
     "path_taxi": True,
+    "update_check": True,  # the installed Windows app asks GitHub for new versions
+    "update_dismissed": None,  # the version whose notice line the player closed
 }
 
 

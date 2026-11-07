@@ -3,12 +3,13 @@
 import sys
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QPainter
+from PySide6.QtCore import QPoint, QRect, Qt, QUrl
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -24,6 +25,10 @@ LABEL_PT, LABEL_COLOR = 9, "#9fb0c8"
 VALUE_PT, VALUE_COLOR = 12, "#ffffff"
 ACCENT = "#ffcc33"
 TAB_W = 186  # every tab's width: the box is 210 px wide, less its 12 px side margins
+# The box's menu button: three bullets. The midline ellipsis isn't in Segoe UI, and
+# the font Qt falls back to draws it faint and makes the box taller.
+MENU_MARK = "•••"
+ABOUT = "About MapleLens"  # the About view's title, and its menu item
 
 
 def text_label(text: str, pt: int, color: str, *, bold: bool = False) -> QLabel:
@@ -31,6 +36,21 @@ def text_label(text: str, pt: int, color: str, *, bold: bool = False) -> QLabel:
     label.setFont(QFont(FONT, pt, QFont.Bold if bold else QFont.Normal))
     label.setStyleSheet(f"color: {color};")
     return label
+
+
+def mark_button(
+    text: str, pt: int, on_click: Callable[[], None], *, color: str = LABEL_COLOR
+) -> QPushButton:
+    """A flat mark (grey unless `color`) that acts on a click and never takes the game's
+    keyboard."""
+    button = QPushButton(text)
+    button.setFlat(True)
+    button.setFocusPolicy(Qt.NoFocus)
+    button.setCursor(Qt.PointingHandCursor)
+    button.setFont(QFont(FONT, pt))
+    button.setStyleSheet(f"color: {color}; border: 0; padding: 0; text-align: left;")
+    button.clicked.connect(on_click)
+    return button
 
 
 def game_to_layer(px: float, py: float, dpr: float) -> tuple[float, float]:
@@ -87,15 +107,69 @@ class Box(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._tab_buttons: list[QPushButton] = []
         self._tab_dots: list[QLabel] = []
-        self._strip = QHBoxLayout()
+        self._strip_row = QWidget()  # holds the strip, so it hides as one
+        self._strip = QHBoxLayout(self._strip_row)
+        self._strip.setContentsMargins(0, 0, 0, 0)
         self._strip.setSpacing(14)
         self._strip.addStretch()
         self._pages = QStackedWidget()
+        self._status = QLabel()
+        self._status.setFont(QFont(FONT, 10))
+        self._status.setStyleSheet(f"color: {VALUE_COLOR};")
+        self._status.hide()
+        self._status_text: str | None = None  # the last set_status, shown once About closes
+        self._about_open = False
+        self._about_url = ""
+        self._build_about()
+        self._menu = QMenu(self)
+        self.attach_menu(self._menu)
+        self._menu_button = mark_button(MENU_MARK, 10, self._open_menu)  # the tabs' size
+        # the strip, the status line or About's title and close mark; then the menu button
+        self._top = QHBoxLayout()
+        self._top.setSpacing(10)
+        for part in (self._strip_row, self._status, self._about_title):
+            self._top.addWidget(part, 1)
+        self._top.addWidget(self._about_close, 0, Qt.AlignVCenter)
+        self._top.addWidget(self._menu_button, 0, Qt.AlignVCenter | Qt.AlignRight)
+        self._notice = QWidget()  # a line of its own, so it shows with the tabs or the status
+        self._notice_text = text_label("", LABEL_PT, ACCENT)
+        # a multiplication sign, the close mark
+        self._notice_close = mark_button("\u00d7", LABEL_PT, self._dismiss_notice)
+        self._on_dismiss: Callable[[], None] | None = None
+        row = QHBoxLayout(self._notice)
+        row.setContentsMargins(0, 4, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self._notice_text)
+        row.addStretch()
+        row.addWidget(self._notice_close)
+        self._notice.hide()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 10)
         layout.setSizeConstraint(QLayout.SetFixedSize)  # the box hugs the current tab
-        layout.addLayout(self._strip)
+        layout.addLayout(self._top)
         layout.addWidget(self._pages)
+        layout.addWidget(self._about)
+        layout.addWidget(self._notice)
+
+    def _build_about(self) -> None:
+        """The About view: a title and a close mark for the top row, and the panel under it."""
+        self._about_title = text_label(ABOUT, 10, VALUE_COLOR, bold=True)  # the tabs' size
+        self._about_close = mark_button("\u00d7", 10, self.close_about)
+        self._about = QWidget()
+        self._about.setFixedWidth(TAB_W)  # the tabs' width: opening About keeps the box's
+        self._about_version = text_label("", 10, VALUE_COLOR)
+        self._about_updates = text_label("", 10, VALUE_COLOR)
+        self._about_link = mark_button("GitHub page \u2197", 10, self._open_link, color=ACCENT)
+        column = QVBoxLayout(self._about)
+        column.setContentsMargins(0, 6, 0, 0)
+        column.setSpacing(2)
+        for name, value in (("Version", self._about_version), ("Updates", self._about_updates)):
+            column.addWidget(text_label(name, LABEL_PT, LABEL_COLOR))
+            column.addWidget(value)
+        column.addSpacing(4)
+        column.addWidget(self._about_link, 0, Qt.AlignLeft)
+        for part in (self._about_title, self._about_close, self._about):
+            part.hide()
 
     def add_tab(self, title: str, widget: QWidget) -> int:
         """Add a tab; the first one added is shown. Returns its index."""
@@ -130,23 +204,151 @@ class Box(QWidget):
             policy = QSizePolicy.Preferred if j == index else QSizePolicy.Ignored
             self._pages.widget(j).setSizePolicy(policy, policy)
 
+    def set_status(self, text: str | None) -> None:
+        """Show `text` in place of the tabs; None brings the tabs back.
+
+        The menu button stays in both: level with the tab titles, or with the status's
+        first line. While About is open, the text is kept for when it closes.
+        """
+        self._status_text = text
+        self._show_current()
+
+    @property
+    def about_open(self) -> bool:
+        return self._about_open
+
+    def show_about(self, version: str, updates: str, url: str, *, accent: bool = False) -> None:
+        """Show About in place of the tabs or the status line, until its close mark closes it.
+
+        `updates` is a line about updates, in the accent colour if `accent`; `url` is what
+        the "GitHub page" link opens. The box knows nothing more about either.
+        """
+        self._about_version.setText(version)
+        self.set_about_updates(updates, accent=accent)
+        self._about_url = url
+        self._about_open = True
+        self._show_current()
+
+    def set_about_updates(self, text: str, *, accent: bool = False) -> None:
+        self._about_updates.setText(text)
+        self._about_updates.setStyleSheet(f"color: {ACCENT if accent else VALUE_COLOR};")
+
+    def close_about(self) -> None:
+        """Back to the tabs, or the status line if one was set meanwhile."""
+        self._about_open = False
+        self._show_current()
+
+    def _open_link(self) -> None:
+        QDesktopServices.openUrl(QUrl(self._about_url))  # the player's own click
+
+    def _show_current(self) -> None:
+        """About while it's open; else the status line if one is set, else the tabs."""
+        about, text = self._about_open, self._status_text
+        for part in (self._about_title, self._about_close, self._about):
+            part.setVisible(about)
+        status = not about and text is not None
+        self._status.setText(text or "")
+        self._status.setVisible(status)
+        self._strip_row.setVisible(not about and text is None)
+        self._pages.setVisible(not about and text is None)
+        row = Qt.AlignTop if status else Qt.AlignVCenter
+        self._top.setAlignment(self._menu_button, row | Qt.AlignRight)
+
+    def set_notice(self, text: str | None, on_dismiss: Callable[[], None] | None = None) -> None:
+        """Show `text` on a line under the pages; None hides it.
+
+        The line's close mark hides it and calls `on_dismiss`.
+        """
+        self._notice_text.setText(text or "")
+        self._on_dismiss = on_dismiss
+        self._notice.setVisible(text is not None)
+
+    def _dismiss_notice(self) -> None:
+        on_dismiss, self._on_dismiss = self._on_dismiss, None
+        self._notice.hide()
+        if on_dismiss:
+            on_dismiss()
+
     def set_tab_dot(self, index: int, on: bool) -> None:
         self._tab_dots[index].setVisible(on)
 
     def allow_typing(self, on: bool) -> None:
-        """Let the box take keyboard focus (only while a text field needs it)."""
+        """Let the box take keyboard focus (only while a text field needs it).
+
+        A box the player hid stays hidden.
+        """
+        shown = self.isVisible()
         self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, not on)
-        self.show()  # changing a window flag hides a shown window
+        if shown:
+            self.show()  # changing a window flag hides a shown window
         if not on and sys.platform == "darwin":
             from maplelens import overlay_mac
 
             overlay_mac.release_keyboard()
 
-    def add_menu_item(self, label: str, callback: Callable[[], None]) -> None:
-        """An item in the box's right-click menu."""
+    def attach_menu(self, menu: QMenu) -> None:
+        """Make `menu` list the box's menu items, read again each time it opens.
+
+        The menu button's menu and the tray's both use it, so neither keeps a list of its
+        own. The items stay the box's, alive however often the menu opens.
+        """
+        menu.aboutToShow.connect(lambda: self._fill(menu))
+
+    def _fill(self, menu: QMenu) -> None:
+        # Not menu.clear(): PySide hands the cleared actions to Python, which then deletes
+        # the box's own (nothing in Python holds them).
+        for action in menu.actions():
+            menu.removeAction(action)
+        menu.addActions(self.actions())
+
+    def _open_menu(self) -> None:
+        """The menu, just under the button, with their right edges lined up."""
+        self._fill(self._menu)  # now, so the width is known before it opens
+        corner = self._menu_button.mapToGlobal(self._menu_button.rect().bottomRight())
+        self._menu.popup(corner - QPoint(self._menu.sizeHint().width() - 1, -1))
+
+    def add_menu_item(
+        self, label: str, callback: Callable[[], None], *, at: int | None = None
+    ) -> QAction:
+        """An item in the box's menu; returns it, so its label can change.
+
+        At the end, or before the item now at index `at` (as list.insert: -1 is before
+        the last one).
+        """
         action = QAction(label, self)
         action.triggered.connect(callback)
-        self.addAction(action)
+        self._insert(action, at)
+        return action
+
+    def add_toggle(
+        self, label: str, checked: bool, on_change: Callable[[bool], None], *, at: int | None = None
+    ) -> QAction:
+        """A checkable item in the box's menu; `on_change` gets its new state."""
+        action = QAction(label, self)
+        action.setCheckable(True)
+        action.setChecked(checked)
+        action.toggled.connect(on_change)
+        self._insert(action, at)
+        return action
+
+    def _insert(self, action: QAction, at: int | None) -> None:
+        actions = self.actions()
+        self.insertAction(actions[at] if at is not None and actions else None, action)
+        self.setContextMenuPolicy(Qt.ActionsContextMenu)
+
+    def add_submenu(
+        self, label: str, choices: Callable[[], list[str]], on_pick: Callable[[str], None]
+    ) -> None:
+        """A submenu in the box's menu listing `choices()`, read again each time it opens."""
+        menu = QMenu(label, self)
+
+        def fill() -> None:
+            menu.clear()
+            for text in choices():
+                menu.addAction(text).triggered.connect(lambda _=False, t=text: on_pick(t))
+
+        menu.aboutToShow.connect(fill)
+        self.addAction(menu.menuAction())
         self.setContextMenuPolicy(Qt.ActionsContextMenu)
 
     def place(self, game_rect: tuple[int, int, int, int]) -> None:

@@ -1,0 +1,15 @@
+{
+  "tag_name": "v1.2.3-beta",
+  "name": "v1.2.3-beta",
+  "draft": false,
+  "prerelease": false,
+  "html_url": "https://github.com/or-keren/maplelens/releases/tag/v1.2.3-beta",
+  "assets": [
+    {
+      "name": "MapleLens-Setup-1.2.3-beta.exe",
+      "size": 61234567,
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "browser_download_url": "https://github.com/or-keren/maplelens/releases/download/v1.2.3-beta/MapleLens-Setup-1.2.3-beta.exe"
+    }
+  ]
+}

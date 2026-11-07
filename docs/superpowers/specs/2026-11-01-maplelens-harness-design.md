@@ -216,7 +216,8 @@ Files are read as UTF-8 with an optional BOM (`utf-8-sig`).
   will be wrong.
 - Reviewer subagent for the screen-only rule: only if the guard misses
   something real.
-- Release/packaging (PyInstaller exe) workflow: when the EXP meter works.
+- Release/packaging (PyInstaller exe) workflow: when the EXP meter works. *Done
+  2026-11-06: see `2026-11-06-windows-installer-design.md`.*
 - Pre-commit hooks: only if CI catches lint failures often enough to annoy.
 - Commit-message rules / changelog tooling: when releases start.
 - CodeQL: a toggle in GitHub settings once public; no file needed.

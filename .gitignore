@@ -6,3 +6,4 @@ dist/
 .ruff_cache/
 .superpowers/
 .claude/settings.local.json
+build/

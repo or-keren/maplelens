@@ -1,6 +1,6 @@
 [project]
 name = "maplelens"
-version = "0.1.0"
+version = "0.2.0"
 description = "Screen-reading-only overlay for MapleStory Classic."
 readme = "README.md"
 license = "MIT"
@@ -28,6 +28,7 @@ dependencies = [
 maplelens = "maplelens.app:main"
 
 [dependency-groups]
+build = ["pyinstaller>=6.22.3"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [build-system]

@@ -1,0 +1,94 @@
+# Started by hand (Actions -> Prepare release -> Run workflow). Bumps the version, runs the
+# checks and opens PR "release: vX.Y.Z" from release/vX.Y.Z. Merging that PR is the
+# approval: release.yml then publishes vX.Y.Z. Needs "Allow GitHub Actions to create and
+# approve pull requests" (Settings -> Actions -> General).
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Part of the version to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Only from main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run Prepare release from main, not $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      # Without re-locking: this runner's uv may be newer than the one that wrote uv.lock and
+      # would rewrite the lock's format, not only its version line. uv sync --locked below
+      # fails if the two files don't agree.
+      - name: Bump the version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          version=$(uv version --bump "$BUMP" --frozen --short)
+          sed -i "/^name = \"maplelens\"\r\?$/{n;s/^version = \"[^\"]*\"/version = \"$version\"/}" uv.lock
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Refuse a version already in flight
+        run: |
+          fail=
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::Tag v$VERSION already exists, so that version is released"
+            fail=1
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/release/v$VERSION" > /dev/null; then
+            echo "::error::Branch release/v$VERSION already exists: merge or close its PR and delete the branch first"
+            fail=1
+          fi
+          open=$(gh pr list --state open --json headRefName,url \
+            --jq '.[] | select(.headRefName | startswith("release/v")) | .url')
+          if [ -n "$open" ]; then
+            echo "::error::A release PR is already open, merge or close it first: $open"
+            fail=1
+          fi
+          [ -z "$fail" ]
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run python scripts/check_screen_only.py
+      - run: uv run pytest
+      - name: Commit, push and open the PR
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "release/v$VERSION"
+          git commit pyproject.toml uv.lock -m "release: v$VERSION"
+          git push origin "release/v$VERSION"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh pr create --base main --head "release/v$VERSION" --title "release: v$VERSION" --body-file - <<EOF
+          Bumps MapleLens to **v$VERSION** (\`pyproject.toml\` and \`uv.lock\` only).
+
+          **Merging this PR publishes the release.** \`release.yml\` then builds
+          \`MapleLens-Setup-$VERSION.exe\`, tags \`v$VERSION\` and publishes the GitHub Release
+          with generated notes. To not release, close this PR and delete the branch.
+
+          The checks ran in [the prepare run]($run_url). CI doesn't start on a PR that Actions
+          opens, so this PR shows none of its own.
+          EOF
