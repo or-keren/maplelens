@@ -1,0 +1,21 @@
+{
+  "tag_name": "v0.2.0",
+  "name": "v0.2.0",
+  "draft": false,
+  "prerelease": false,
+  "html_url": "https://github.com/or-keren/maplelens/releases/tag/v0.2.0",
+  "assets": [
+    {
+      "name": "MapleLens-Setup-0.1.9.exe",
+      "size": 61234567,
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "browser_download_url": "https://github.com/or-keren/maplelens/releases/download/v0.2.0/MapleLens-Setup-0.1.9.exe"
+    },
+    {
+      "name": "maplelens-setup-0.2.0.exe",
+      "size": 61234567,
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "browser_download_url": "https://github.com/or-keren/maplelens/releases/download/v0.2.0/maplelens-setup-0.2.0.exe"
+    }
+  ]
+}

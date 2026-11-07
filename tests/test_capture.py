@@ -13,3 +13,8 @@ def test_pick_window_falls_back_to_substring():
 
 def test_pick_window_none():
     assert pick_window(WINDOWS, "Nope") is None
+
+
+def test_pick_window_exact_only():
+    assert pick_window(WINDOWS, "MapleStory", exact=True) == 2
+    assert pick_window(WINDOWS[:1], "MapleStory", exact=True) is None

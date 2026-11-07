@@ -37,14 +37,39 @@ def clear_cache() -> None:
     _last_hit.clear()
 
 
+def _imread(path: Path, flags: int) -> np.ndarray | None:
+    """Image at `path`, or None if missing or unreadable.
+
+    fromfile + imdecode: imread fails on non-ASCII paths on Windows.
+    """
+    if not path.is_file():
+        return None
+    return cv2.imdecode(np.fromfile(path, np.uint8), flags)
+
+
 def load(name: str) -> np.ndarray:
     """templates/<name>.png as BGR, cached."""
     if name not in _images:
-        img = cv2.imread(str(TEMPLATES / f"{name}.png"), cv2.IMREAD_COLOR)
+        img = _imread(TEMPLATES / f"{name}.png", cv2.IMREAD_COLOR)
         if img is None:
             raise FileNotFoundError(TEMPLATES / f"{name}.png")
         _images[name] = img
     return _images[name]
+
+
+def load_all() -> int:
+    """Read every template under TEMPLATES (anchors and font glyphs); the number read.
+
+    Raises FileNotFoundError if there are none, or if one can't be read.
+    """
+    anchors = sorted(TEMPLATES.glob("*.png"))
+    for p in anchors:
+        load(p.stem)
+    fonts = [d.name for d in sorted(TEMPLATES.iterdir()) if d.is_dir()]
+    n = len(anchors) + sum(len(_font(f)) for f in fonts)
+    if not n:
+        raise FileNotFoundError(f"no templates in {TEMPLATES}")
+    return n
 
 
 def normalize(frame: np.ndarray) -> np.ndarray:
@@ -102,7 +127,7 @@ def _font(font: str) -> Font:
             raise FileNotFoundError(f"no glyph PNGs in {TEMPLATES / font}")
         glyphs = []
         for p in paths:
-            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+            img = _imread(p, cv2.IMREAD_GRAYSCALE)
             if img is None:
                 raise FileNotFoundError(f"cannot read glyph {p}")
             name = p.stem.split("_")[0]

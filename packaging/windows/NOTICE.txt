@@ -1,0 +1,28 @@
+MapleLens
+=========
+
+MapleLens is open source under the MIT License (MapleLens-LICENSE.txt).
+Source code: https://github.com/or-keren/maplelens
+
+MapleLens is a fan-made tool. It is not affiliated with or endorsed by Nexon.
+MapleStory is a trademark of Nexon.
+
+Data
+----
+
+Map and portal data adapted from meowdb (https://meowdb.com/msclassic).
+Minimap pictures and portal types from OSMS Data Explorer (https://osmsdataexplorer.com).
+
+Third-party software in this folder
+-----------------------------------
+
+- Qt for Python (PySide6, shiboken6) and Qt 6, under the GNU Lesser General Public
+  License v3 (PySide6-Qt-LGPL-3.0.txt), which builds on the GNU General Public
+  License v3 (PySide6-Qt-GPL-3.0.txt). Qt ships here as separate DLLs that you can
+  replace with your own build. Source: https://code.qt.io/cgit/pyside/pyside-setup.git
+  and https://download.qt.io/official_releases/qt/
+- OpenCV, Apache License 2.0 (OpenCV-LICENSE.txt), with the licenses of the libraries
+  it includes (OpenCV-LICENSE-3RD-PARTY.txt).
+- NumPy, BSD 3-Clause and others (numpy-LICENSE.txt).
+- PyWinRT (winrt), MIT License (winrt-LICENSE.txt).
+- Python, Python Software Foundation License (Python-LICENSE.txt).

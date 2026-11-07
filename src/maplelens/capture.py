@@ -3,10 +3,12 @@
 import sys
 
 
-def pick_window(titles: list[tuple[int, str]], title: str) -> int | None:
-    """Exact title match wins; otherwise the first substring match."""
-    exact = next((h for h, t in titles if t == title), None)
-    return exact if exact is not None else next((h for h, t in titles if title in t), None)
+def pick_window(titles: list[tuple[int, str]], title: str, exact: bool = False) -> int | None:
+    """Exact title match wins; otherwise (unless `exact`) the first substring match."""
+    hit = next((h for h, t in titles if t == title), None)
+    if hit is not None or exact:
+        return hit
+    return next((h for h, t in titles if title in t), None)
 
 
 if sys.platform == "win32":
@@ -18,6 +20,7 @@ if sys.platform == "win32":
         list_windows,
         set_dpi_aware,
         window_title,
+        window_titles,
     )
 elif sys.platform == "darwin":
     from maplelens.capture_mac import (  # noqa: F401
@@ -28,4 +31,5 @@ elif sys.platform == "darwin":
         list_windows,
         set_dpi_aware,
         window_title,
+        window_titles,
     )

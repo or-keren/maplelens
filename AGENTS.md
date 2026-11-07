@@ -23,7 +23,11 @@ uv run pytest                                # tests
 uv run ruff check                            # lint
 uv run ruff format                           # format
 uv run python scripts/check_screen_only.py   # screen-only guard
+uv run --group build python scripts/build_installer.py   # Windows: dist\MapleLens-Setup-X.Y.Z.exe
 ```
+
+The build needs Inno Setup 6 (`winget install JRSoftware.InnoSetup --scope user`);
+`--freeze-only` stops at the app folder `dist\MapleLens\`.
 
 ## Layout
 
@@ -33,13 +37,17 @@ uv run python scripts/check_screen_only.py   # screen-only guard
   - `overlay.py` — the see-through `Layer` and draggable `Box`; `overlay_mac.py` — the macOS panels
   - `data/maps.json` — the map data; `data/minimaps/` — minimap pictures
   - `store.py` — settings file and data folder
-  - `app.py` — entry point (`uv run maplelens`)
+  - `update.py` — the update check's pure part: GitHub's latest-release reply → `Release`, version compare, digest check (`MAPLELENS_UPDATE_REPO` overrides the repo)
+  - `app.py` — entry point (`uv run maplelens`); also the update check's threads, download and handoff to Setup (`UpdateCheck`)
   - `tools/exp_meter/` — the EXP meter: `meter`, `history`, `text`, `ui`
   - `tools/path_arrow/` — the path arrow: `maps`, `route`, `camera`, `ui`
 - `scripts/check_screen_only.py` — the guard; banned lists live there, with reasons
 - `scripts/grab.py` — save a cropped fixture screenshot of the game
 - `scripts/make_level_font.py` — build the level digit templates from `scripts/level_sprites/`
-- `tests/` — pytest; `tests/fixtures/screens/` holds cropped PNG screenshots
+- `scripts/build_installer.py` — the Windows build: freeze, check the bundle, `MapleLens.exe --self-check`, Inno Setup; run locally and by `release.yml`
+- `packaging/windows/` — `maplelens.spec` (PyInstaller), `maplelens.iss` (Inno Setup; its `AppId` never changes), the icon, `NOTICE.txt` and the license texts the build ships
+- `.github/workflows/` — `ci.yml` (the checks), `prepare-release.yml` (started by hand: bumps the version, opens the release PR), `release.yml` (on push to `main`: publishes a version that has no tag yet)
+- `tests/` — pytest; `tests/fixtures/screens/` holds cropped PNG screenshots, `tests/fixtures/github/` saved `releases/latest` replies
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — designs and plans
 
 Planned, **not yet** created: `tools/<name>/` for the class helper and prices.
@@ -54,6 +62,8 @@ Planned, **not yet** created: `tools/<name>/` for the class helper and prices.
   the guard's banned list.
 - Don't write the banned module or Win32 names in comments or docstrings under
   `src/` or `scripts/` — the guard matches text.
+- Never change `version` in `pyproject.toml` in a feature PR: a new version reaching
+  `main` publishes a release. Releases go through Prepare release (CONTRIBUTING.md).
 
 ## Fixture screenshots
 

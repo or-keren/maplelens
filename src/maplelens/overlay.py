@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -87,15 +88,40 @@ class Box(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._tab_buttons: list[QPushButton] = []
         self._tab_dots: list[QLabel] = []
-        self._strip = QHBoxLayout()
+        self._strip_row = QWidget()  # holds the strip, so it hides as one
+        self._strip = QHBoxLayout(self._strip_row)
+        self._strip.setContentsMargins(0, 0, 0, 0)
         self._strip.setSpacing(14)
         self._strip.addStretch()
         self._pages = QStackedWidget()
+        self._status = QLabel()
+        self._status.setFont(QFont(FONT, 10))
+        self._status.setStyleSheet(f"color: {VALUE_COLOR};")
+        self._status.hide()
+        self._notice = QWidget()  # a line of its own, so it shows with the tabs or the status
+        self._notice_text = text_label("", LABEL_PT, ACCENT)
+        self._notice_close = QPushButton("\u00d7")  # a multiplication sign, the close mark
+        self._notice_close.setFlat(True)
+        self._notice_close.setFocusPolicy(Qt.NoFocus)
+        self._notice_close.setCursor(Qt.PointingHandCursor)
+        self._notice_close.setFont(QFont(FONT, LABEL_PT))
+        self._notice_close.setStyleSheet(f"color: {LABEL_COLOR}; border: 0; padding: 0;")
+        self._notice_close.clicked.connect(self._dismiss_notice)
+        self._on_dismiss: Callable[[], None] | None = None
+        row = QHBoxLayout(self._notice)
+        row.setContentsMargins(0, 4, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self._notice_text)
+        row.addStretch()
+        row.addWidget(self._notice_close)
+        self._notice.hide()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 10)
         layout.setSizeConstraint(QLayout.SetFixedSize)  # the box hugs the current tab
-        layout.addLayout(self._strip)
+        layout.addWidget(self._strip_row)
         layout.addWidget(self._pages)
+        layout.addWidget(self._status)
+        layout.addWidget(self._notice)
 
     def add_tab(self, title: str, widget: QWidget) -> int:
         """Add a tab; the first one added is shown. Returns its index."""
@@ -130,6 +156,28 @@ class Box(QWidget):
             policy = QSizePolicy.Preferred if j == index else QSizePolicy.Ignored
             self._pages.widget(j).setSizePolicy(policy, policy)
 
+    def set_status(self, text: str | None) -> None:
+        """Show one line of `text` in place of the tabs; None brings the tabs back."""
+        self._status.setText(text or "")
+        self._status.setVisible(text is not None)
+        self._strip_row.setVisible(text is None)
+        self._pages.setVisible(text is None)
+
+    def set_notice(self, text: str | None, on_dismiss: Callable[[], None] | None = None) -> None:
+        """Show `text` on a line under the pages; None hides it.
+
+        The line's close mark hides it and calls `on_dismiss`.
+        """
+        self._notice_text.setText(text or "")
+        self._on_dismiss = on_dismiss
+        self._notice.setVisible(text is not None)
+
+    def _dismiss_notice(self) -> None:
+        on_dismiss, self._on_dismiss = self._on_dismiss, None
+        self._notice.hide()
+        if on_dismiss:
+            on_dismiss()
+
     def set_tab_dot(self, index: int, on: bool) -> None:
         self._tab_dots[index].setVisible(on)
 
@@ -142,11 +190,48 @@ class Box(QWidget):
 
             overlay_mac.release_keyboard()
 
-    def add_menu_item(self, label: str, callback: Callable[[], None]) -> None:
-        """An item in the box's right-click menu."""
+    def add_menu_item(
+        self, label: str, callback: Callable[[], None], *, at: int | None = None
+    ) -> QAction:
+        """An item in the box's right-click menu; returns it, so its label can change.
+
+        At the end, or before the item now at index `at` (as list.insert: -1 is before
+        the last one).
+        """
         action = QAction(label, self)
         action.triggered.connect(callback)
-        self.addAction(action)
+        self._insert(action, at)
+        return action
+
+    def add_toggle(
+        self, label: str, checked: bool, on_change: Callable[[bool], None], *, at: int | None = None
+    ) -> QAction:
+        """A checkable item in the right-click menu; `on_change` gets its new state."""
+        action = QAction(label, self)
+        action.setCheckable(True)
+        action.setChecked(checked)
+        action.toggled.connect(on_change)
+        self._insert(action, at)
+        return action
+
+    def _insert(self, action: QAction, at: int | None) -> None:
+        actions = self.actions()
+        self.insertAction(actions[at] if at is not None and actions else None, action)
+        self.setContextMenuPolicy(Qt.ActionsContextMenu)
+
+    def add_submenu(
+        self, label: str, choices: Callable[[], list[str]], on_pick: Callable[[str], None]
+    ) -> None:
+        """A right-click submenu listing `choices()`, read again each time it opens."""
+        menu = QMenu(label, self)
+
+        def fill() -> None:
+            menu.clear()
+            for text in choices():
+                menu.addAction(text).triggered.connect(lambda _=False, t=text: on_pick(t))
+
+        menu.aboutToShow.connect(fill)
+        self.addAction(menu.menuAction())
         self.setContextMenuPolicy(Qt.ActionsContextMenu)
 
     def place(self, game_rect: tuple[int, int, int, int]) -> None:

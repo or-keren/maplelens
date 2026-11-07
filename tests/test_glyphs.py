@@ -145,3 +145,30 @@ def test_glyph_variants_share_a_char(templates):
     cv2.imwrite(str(templates / "v" / "comma_b.png"), b)
     m = np.hstack([a, np.zeros((5, 3)), b]) > 0
     assert glyphs.read_text(m, "v", space_px=9) == ",,"
+
+
+def _write_png(path, img):
+    # imencode + tofile: imwrite, like imread, fails on non-ASCII paths on Windows
+    assert cv2.imencode(".png", img)[1].tofile(path) is None
+
+
+def test_templates_load_from_non_ascii_folder(tmp_path, monkeypatch):
+    # The installed app lives under C:\Users\<name>\..., and <name> may be non-ASCII.
+    root = tmp_path / "דניאל"
+    (root / "f").mkdir(parents=True)
+    anchor = noise(6, 8, seed=1)
+    _write_png(root / "a.png", anchor)
+    glyph = np.full((5, 1), 255, np.uint8)  # a 1
+    _write_png(root / "f" / "1.png", glyph)
+    monkeypatch.setattr(glyphs, "TEMPLATES", root)
+    glyphs.clear_cache()
+    try:
+        assert np.array_equal(glyphs.load("a"), anchor)
+        assert glyphs.read_text(glyph > 0, "f", space_px=9) == "1"
+    finally:
+        glyphs.clear_cache()
+
+
+def test_missing_template_raises(templates):
+    with pytest.raises(FileNotFoundError):
+        glyphs.load("nope")
