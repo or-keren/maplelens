@@ -423,8 +423,8 @@ Behaviour of `QuestHelperTool.update` with `t = r.tracker` (the spec's states ta
 
 | `t` | Lists | Progress (in memory) | Lines |
 |---|---|---|---|
-| `Tracker`, not minimized | each block: `match_block` → id: append to `quests_tracked` and `quests_followed` if absent, progress[id] = `done_parts`, missing count reset. `UNKNOWN` / `SEVERAL` → an ⓘ note. Each followed id not in this read: missing += 1; at 2, remove it from both lists, from `quests_expanded`, and from progress | as read | the notes |
-| minimized `Tracker`, `UNREADABLE`, `PARTLY` | unchanged; missing counts neither grow nor reset | kept | `UNREADABLE`: yellow `UNREAD_PANEL`; `PARTLY`: grey `PARTLY_PANEL`; else none |
+| `Tracker`, not minimized | each block: `match_block` → id: append to `quests_tracked` and `quests_followed` if absent, progress[id] = `done_parts`, missing count reset. `UNKNOWN` / `SEVERAL` → an ⓘ note. Each followed id not in this read, and not named like a `SEVERAL` block (a garbled target can leave a shared-name quest unmatched): missing += 1; at 2, remove it from both lists, from `quests_expanded`, and from progress | as read | the notes |
+| minimized `Tracker`, `UNREADABLE`, `PARTLY` | unchanged; missing counts neither grow nor reset | kept | `UNREADABLE`: yellow `UNREAD_PANEL`; `PARTLY`: grey `PARTLY_PANEL`, only once `PARTLY_SHOWN = 5` readings in a row were `PARTLY` (a busy map behind the panel gives PARTLY on about 2 in 5 frames: the line mustn't flicker); else none |
 | None, 2 readings in a row | unchanged | cleared | none |
 | None, the first reading | unchanged | kept | the previous ones |
 
