@@ -548,6 +548,13 @@ def test_several_block_protects_a_followed_shared_quest(make):
     assert tool.settings["quests_tracked"] == [1004]
 
 
+def test_cut_several_block_protects_a_followed_shared_quest(make):
+    tool = make(tracked=[1004], quests_followed=[1004])
+    for t in (0, 1):
+        tool.update(panel(TrackerQuest("Test of Qual…", ())), RECT, t)
+    assert tool.settings["quests_tracked"] == [1004]
+
+
 def test_no_panel_restores_todays_rows(make):
     tool = make()
     follow(tool, mirror(3, 2))

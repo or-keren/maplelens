@@ -33,6 +33,7 @@ from maplelens.tools.quest_helper.plan import (
     Target,
     also_for,
     asked,
+    block_candidates,
     done_parts,
     find_quest,
     match_block,
@@ -179,7 +180,9 @@ class QuestHelperTool:
         }
         ids = s.get("quests_followed")
         ids = ids if isinstance(ids, list) else []
-        s["quests_followed"] = list(dict.fromkeys(i for i in ids if i in s["quests_tracked"]))
+        s["quests_followed"] = list(
+            dict.fromkeys(i for i in ids if type(i) is int and i in s["quests_tracked"])
+        )
 
     def update(self, r: Reading | None, _game_rect, _now: float) -> None:
         quest = r.quest if r is not None else None
@@ -216,7 +219,7 @@ class QuestHelperTool:
     def _follow(self, t: Tracker) -> None:
         d, s = self._data, self._settings
         seen: set[int] = set()
-        several: set[str] = set()
+        several: set[int] = set()  # quests a SEVERAL block may be
         changed = False
         for block in t.quests:
             m = match_block(d, block)
@@ -224,7 +227,7 @@ class QuestHelperTool:
                 self._notes.append(NOT_LISTED_Q.format(name=block.name))
             elif m == SEVERAL:
                 self._notes.append(SEVERAL_Q.format(name=block.name))
-                several.add(block.name)
+                several.update(q.id for q in block_candidates(d, block))
             else:
                 seen.add(m)
                 self._progress[m] = done_parts(d, d.quests[m], block.lines)
@@ -234,7 +237,7 @@ class QuestHelperTool:
                         s[key].append(m)
                         changed = True
         for i in list(s["quests_followed"]):
-            if i in seen or d.quests[i].name in several:
+            if i in seen or i in several:
                 continue
             self._missing[i] = self._missing.get(i, 0) + 1
             if self._missing[i] >= GONE:

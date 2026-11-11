@@ -145,14 +145,18 @@ def _part(data: QuestData, quest: Quest, line: TrackerLine) -> Part | None:
     return named.get(snap_title(line.text, named.keys()))
 
 
-def match_block(data: QuestData, block: TrackerQuest) -> int | str:
+def block_candidates(data: QuestData, block: TrackerQuest) -> list[Quest]:
+    """The quests a block's name can be: by prefix when cut, else by the snapped name."""
     name = block.name
     if name.endswith((".", "…")):
         head = name.rstrip(".…")
-        found = [q for q in data.quests.values() if q.name.startswith(head)]
-    else:
-        name = snap_title(name, {q.name for q in data.quests.values()})
-        found = [q for q in data.quests.values() if q.name == name]
+        return [q for q in data.quests.values() if q.name.startswith(head)]
+    name = snap_title(name, {q.name for q in data.quests.values()})
+    return [q for q in data.quests.values() if q.name == name]
+
+
+def match_block(data: QuestData, block: TrackerQuest) -> int | str:
+    found = block_candidates(data, block)
     if not found:
         return UNKNOWN
     if len(found) > 1:
