@@ -165,7 +165,7 @@ def done_parts(data: QuestData, quest: Quest, lines: tuple[TrackerLine, ...]) ->
     return frozenset(p for p, ln in parts if p and ln.have >= ln.need)
 
 
-def targets(
+def targets(  # noqa: PLR0913 - the quest, its map ranking and its progress
     data: QuestData,
     quest: Quest,
     *,

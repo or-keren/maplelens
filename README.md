@@ -23,8 +23,9 @@ one click to set a route there, plus what comes next: job advancement, gear and 
 
 **Quest helper:** open a quest in the game and the Quests tab shows where to go for each
 NPC, monster and item it needs, one click to set a route there. Track quests to keep them.
-Each quest switches between Closest (the nearest map) and Best (the most monsters); quick
-quests start on Closest.
+Quests you follow in the game's Quest Helper are tracked by themselves, and their targets
+drop off as you finish them. Each quest switches between Closest (the nearest map) and Best
+(the most monsters); quick quests start on Closest.
 
 ![The Quests tab next to the game's quest window: The Filing Error's Torn Ledger Pages row is outlined with Going · 5 maps away and a Stop button, the Path tab shows its running dot, and a yellow arrow by the character points the way](docs/screenshots/quests.jpg)
 
@@ -161,7 +162,8 @@ checks, the workflow and how releases are made.
 > your route), the class helper (a Class tab with gear, training maps, AP and SP plans for
 > every 1st and 2nd job, plus marks on the game's stat and skill windows) and the quest
 > helper (a Quests tab that tracks quests, showing where to go for each NPC, monster and
-> item they need, and takes over while a quest window is open in the game).
+> item they need, follows the game's Quest Helper, and takes over while a quest window is
+> open in the game).
 >
 > Map and portal data adapted from [meowdb](https://meowdb.com/msclassic).
 > Minimap pictures and portal types from [OSMS Data Explorer](https://osmsdataexplorer.com).

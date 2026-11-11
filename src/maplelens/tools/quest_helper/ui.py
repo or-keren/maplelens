@@ -23,17 +23,26 @@ from maplelens.overlay import (
     text_label,
 )
 from maplelens.readers import Reading
+from maplelens.readers.quest_tracker import PARTLY, Tracker
 from maplelens.readers.quest_window import NAME_UNREADABLE, QuestOpen
+from maplelens.readers.window import UNREADABLE
 from maplelens.tools.quest_helper.data import Quest, QuestData, load
 from maplelens.tools.quest_helper.plan import (
+    SEVERAL,
+    Part,
     Target,
     also_for,
     asked,
+    done_parts,
     find_quest,
+    match_block,
     shared_name,
     show_giver,
     starts_closest,
     targets,
+)
+from maplelens.tools.quest_helper.plan import (
+    UNKNOWN as NO_MATCH,
 )
 
 EMPTY = "Open a quest in the game to see where to go"
@@ -51,6 +60,12 @@ TRACKING_ONE = "Tracking · 1 quest"
 GOING = "Going · {n} maps away"
 GOING_ONE = "Going · 1 map away"
 GOING_HERE = "Going · on this map"
+UNREAD_PANEL = "Can't read the game's Quest Helper: move it fully into view"
+PARTLY_PANEL = "Can't read all of the game's Quest Helper"
+NOT_LISTED_Q = "{name}: not in MapleLens's list yet"
+SEVERAL_Q = "{name}: several quests have this name"
+PARTLY_SHOWN = 5  # PARTLY readings in a row before the line shows: a busy map flickers it
+GONE = 2  # panel readings in a row without a followed quest before it is untracked
 ALSO = "also for {quest}"
 SHUT, SHOWN = "▸", "▾"
 CLOSE = "\u00d7"  # the multiplication sign, the box's close mark
@@ -108,6 +123,12 @@ class QuestHelperTool:
         self._go, self._heading, self._stop, self._hops = go, heading, stop, hops
         self._data = load() if data is None else data
         self._clean()
+        self._progress: dict[int, frozenset[Part]] = {}  # done targets, from the panel
+        self._missing: dict[int, int] = {}  # panel readings in a row without a followed quest
+        self._notes: list[str] = []  # the panel's blocks MapleLens can't place
+        self._panel_line: tuple[str, str] | None = None  # the panel's warning item
+        self._no_panel = 0  # readings in a row without the panel
+        self._partly = 0  # readings in a row that were PARTLY
         self._quest: QuestOpen | str | None = None  # the quest window, as shown
         self._misses = 0  # readings in a row without it
         self._shown: list | None = None  # the items now drawn
@@ -156,6 +177,9 @@ class QuestHelperTool:
         s["quests_closest"] = {
             k: v for k, v in picks.items() if type(v) is bool and k.isdigit() and int(k) in quests
         }
+        ids = s.get("quests_followed")
+        ids = ids if isinstance(ids, list) else []
+        s["quests_followed"] = list(dict.fromkeys(i for i in ids if i in s["quests_tracked"]))
 
     def update(self, r: Reading | None, _game_rect, _now: float) -> None:
         quest = r.quest if r is not None else None
@@ -166,7 +190,69 @@ class QuestHelperTool:
             self._misses += 1
             if self._misses >= 2:  # one missed reading keeps it
                 self._quest = None
+        self._read_panel(r.tracker if r is not None else None)
         self._render()
+
+    def _read_panel(self, t: Tracker | str | None) -> None:
+        """Follow the game's Quest Helper: see the module's spec for the states."""
+        if t is None:
+            self._no_panel += 1
+            if self._no_panel >= GONE:  # one missed reading keeps everything
+                self._progress, self._notes, self._panel_line, self._partly = {}, [], None, 0
+            return
+        self._no_panel = 0
+        self._partly = self._partly + 1 if t == PARTLY else 0
+        if t == PARTLY:  # half read: nothing changes but the line, once it lasts
+            shown = self._partly >= PARTLY_SHOWN
+            self._panel_line = ("info", PARTLY_PANEL) if shown else None
+        elif t == UNREADABLE:
+            self._notes, self._panel_line = [], ("action", UNREAD_PANEL)
+        elif isinstance(t, Tracker) and t.minimized:
+            self._notes, self._panel_line = [], None
+        elif isinstance(t, Tracker):
+            self._notes, self._panel_line = [], None
+            self._follow(t)
+
+    def _follow(self, t: Tracker) -> None:
+        d, s = self._data, self._settings
+        seen: set[int] = set()
+        several: set[str] = set()
+        changed = False
+        for block in t.quests:
+            m = match_block(d, block)
+            if m == NO_MATCH:
+                self._notes.append(NOT_LISTED_Q.format(name=block.name))
+            elif m == SEVERAL:
+                self._notes.append(SEVERAL_Q.format(name=block.name))
+                several.add(block.name)
+            else:
+                seen.add(m)
+                self._progress[m] = done_parts(d, d.quests[m], block.lines)
+                self._missing.pop(m, None)
+                for key in ("quests_tracked", "quests_followed"):
+                    if m not in s[key]:
+                        s[key].append(m)
+                        changed = True
+        for i in list(s["quests_followed"]):
+            if i in seen or d.quests[i].name in several:
+                continue
+            self._missing[i] = self._missing.get(i, 0) + 1
+            if self._missing[i] >= GONE:
+                self._forget(i)
+                changed = True
+        if changed:
+            self._changed()
+
+    def _forget(self, qid: int) -> None:
+        """Drop a quest from every list and from memory."""
+        s = self._settings
+        for key in ("quests_tracked", "quests_followed"):
+            if qid in s[key]:
+                s[key].remove(qid)
+        if s["quests_expanded"] == qid:
+            s["quests_expanded"] = None
+        self._progress.pop(qid, None)
+        self._missing.pop(qid, None)
 
     # --- actions ----------------------------------------------------------
 
@@ -180,9 +266,7 @@ class QuestHelperTool:
         self._save()
 
     def _untrack(self, qid: int) -> None:
-        self._settings["quests_tracked"].remove(qid)
-        if self._settings["quests_expanded"] == qid:
-            self._settings["quests_expanded"] = None
+        self._forget(qid)
         self._save()
 
     def _expand(self, qid: int) -> None:
@@ -219,16 +303,30 @@ class QuestHelperTool:
         tracked = self._settings["quests_tracked"]
         out, top = self._top(q, tracked) if q is not None else ([], None)
         listed = [i for i in tracked if top is None or i != top.id]
+
+        def done(i: int) -> frozenset[Part]:
+            return self._progress.get(i, frozenset())
+
         plans = {
             i: targets(
-                d, d.quests[i], giver=False, hops=self._hops, closest=self._closest(d.quests[i])
+                d,
+                d.quests[i],
+                giver=False,
+                hops=self._hops,
+                done=done(i),
+                closest=self._closest(d.quests[i]),
             )
             for i in listed
         }
         if top is not None:
             giver = show_giver(q.taken, top.id in tracked)
             plans[top.id] = targets(
-                d, top, giver=giver, hops=self._hops, closest=self._closest(top)
+                d,
+                top,
+                giver=giver,
+                hops=self._hops,
+                done=done(top.id),
+                closest=self._closest(top),
             )
         going = self._heading()
 
@@ -238,6 +336,9 @@ class QuestHelperTool:
 
         if top is not None:
             out += rows(top.id)
+        if self._panel_line is not None:
+            out.append(self._panel_line)
+        out += [("info", note) for note in self._notes]
         if listed:
             n = len(tracked)  # the open one too, though it shows only on top
             out.append(("label", TRACKING_ONE if n == 1 else TRACKING.format(n=n)))

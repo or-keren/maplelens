@@ -4,10 +4,12 @@ from pathlib import Path
 import pytest
 
 from maplelens.readers import Reading
+from maplelens.readers.quest_tracker import PARTLY, Tracker, TrackerLine, TrackerQuest
 from maplelens.readers.quest_window import QuestOpen
 from maplelens.readers.window import UNREADABLE
 from maplelens.store import DEFAULTS
 from maplelens.tools.quest_helper.data import MAPS, Item, Quest, load
+from maplelens.tools.quest_helper.plan import TIMES
 
 SMALL = Path(__file__).parent / "fixtures" / "quests_small.json"
 RECT = (0, 0, 1366, 768)
@@ -37,8 +39,19 @@ def data():
     return replace(d, quests=quests, mobs={**d.mobs, 2: snail}, items=items)
 
 
-def R(quest=None):
-    return Reading(0.0, None, None, None, None, quest=quest)
+def R(quest=None, tracker=None):
+    return Reading(0.0, None, None, None, None, quest=quest, tracker=tracker)
+
+
+SNAIL, SHELL = "Snail", "Snail Shell"  # 1001's targets: Snail x3, Snail Shell x10
+
+
+def panel(*blocks):
+    return R(tracker=Tracker(len(blocks), False, tuple(blocks)))
+
+
+def mirror(snails=0, shells=0):
+    return TrackerQuest(MIRROR, (TrackerLine(snails, 3, SNAIL), TrackerLine(shells, 10, SHELL)))
 
 
 def opened(name=MIRROR, taken=False):
@@ -54,13 +67,14 @@ def make(monkeypatch):
 
     QApplication.instance() or QApplication([])
 
-    def build(tracked=(), expanded=None, heading=None, closest=None, hops=lambda m: None):
+    def build(tracked=(), expanded=None, heading=None, closest=None, hops=lambda m: None, **more):
         calls = {"go": [], "stop": 0, "changed": 0, "heading": heading}
         settings = dict(
             DEFAULTS,
             quests_tracked=tracked if isinstance(tracked, str) else list(tracked),
             quests_expanded=expanded,
             quests_closest={} if closest is None else closest,
+            **more,
         )
 
         def changed():
@@ -428,3 +442,150 @@ def test_bad_switch_settings_are_dropped(make):
     assert tool.settings["quests_closest"] == {"1001": False}
     tool = make(closest="oops")
     assert tool.settings["quests_closest"] == {}
+
+
+# --- following the game's Quest Helper ---------------------------------------------
+
+DONE_ROWS = [f"Snail Shell {TIMES}10", "Heena"]  # 1001 with its Snails done, taken
+
+
+def follow(tool, *blocks):
+    tool.update(panel(*blocks), RECT, 0)
+
+
+def titles(tool):
+    return [r.name for r in rows(tool)]
+
+
+def test_panel_quest_is_tracked_and_saved(make):
+    tool = make()
+    follow(tool, mirror())
+    assert tool.settings["quests_tracked"] == [1001]
+    assert tool.settings["quests_followed"] == [1001]
+    assert tool.calls["changed"] >= 1 and MIRROR in texts(tool)
+
+
+def test_done_targets_drop_off(make):
+    tool = make(tracked=[1001], expanded=1001)
+    follow(tool, mirror(snails=3, shells=2))
+    assert titles(tool) == DONE_ROWS
+
+
+def test_all_done_shows_only_hand_in(make):
+    tool = make(tracked=[1001], expanded=1001)
+    follow(tool, mirror(3, 10))
+    assert titles(tool) == ["Heena"]
+
+
+def test_leaving_the_panel_untracks_after_two_reads(make):
+    tool = make()
+    follow(tool, mirror())
+    tool.update(panel(), RECT, 1)
+    assert tool.settings["quests_tracked"] == [1001]
+    tool.update(panel(), RECT, 2)
+    assert tool.settings["quests_tracked"] == [] and tool.settings["quests_followed"] == []
+
+
+def test_track_button_quest_stays(make):
+    tool = make(tracked=[SNAILS])
+    for t in (0, 1):
+        tool.update(panel(), RECT, t)
+    assert tool.settings["quests_tracked"] == [SNAILS]
+
+
+def test_minimized_unreadable_and_partly_change_nothing(make):
+    tool = make()
+    follow(tool, mirror(3, 2))
+    tool.settings["quests_expanded"] = 1001
+    for reading in (R(tracker=Tracker(0, True, ())), R(tracker=UNREADABLE), R(tracker=PARTLY)):
+        for _ in range(3):
+            tool.update(reading, RECT, 1)
+        assert tool.settings["quests_tracked"] == [1001]
+        assert titles(tool) == DONE_ROWS
+    tool.update(panel(), RECT, 2)  # the first of two: doesn't untrack on its own
+    assert tool.settings["quests_tracked"] == [1001]
+
+
+def test_panel_warnings(make):
+    from PySide6.QtWidgets import QLabel
+
+    from maplelens.overlay import ACCENT, InfoLine
+    from maplelens.tools.quest_helper.ui import PARTLY_PANEL, PARTLY_SHOWN, UNREAD_PANEL
+
+    tool = make()
+    tool.update(R(tracker=UNREADABLE), RECT, 0)
+    (line,) = [w for w in visible(tool, QLabel) if w.text() == UNREAD_PANEL]
+    assert ACCENT in line.styleSheet()
+    tool.update(R(tracker=PARTLY), RECT, 1)
+    assert UNREAD_PANEL not in texts(tool) and PARTLY_PANEL not in texts(tool)
+    for t in range(PARTLY_SHOWN - 2):  # PARTLY_SHOWN - 1 in a row so far
+        tool.update(R(tracker=PARTLY), RECT, t)
+    assert PARTLY_PANEL not in texts(tool)
+    tool.update(R(tracker=PARTLY), RECT, 9)
+    assert PARTLY_PANEL in [w.text() for w in visible(tool, InfoLine)]
+    tool.update(panel(), RECT, 10)  # a whole read clears it, and the count starts again
+    assert PARTLY_PANEL not in texts(tool)
+    tool.update(R(tracker=PARTLY), RECT, 11)
+    assert PARTLY_PANEL not in texts(tool)
+
+
+def test_unknown_and_several_blocks_are_notes(make):
+    from maplelens.tools.quest_helper.ui import PARTLY_PANEL, UNREAD_PANEL
+
+    tool = make()
+    follow(tool, TrackerQuest("Nobody's Quest", ()), TrackerQuest(SHARED, ()), mirror())
+    shown = texts(tool)
+    assert "Nobody's Quest: not in MapleLens's list yet" in shown
+    assert f"{SHARED}: several quests have this name" in shown
+    assert PARTLY_PANEL not in shown and UNREAD_PANEL not in shown
+    assert tool.settings["quests_tracked"] == [1001]
+
+
+def test_several_block_protects_a_followed_shared_quest(make):
+    tool = make(tracked=[1004], quests_followed=[1004])
+    for t in (0, 1):
+        tool.update(panel(TrackerQuest(SHARED, ())), RECT, t)
+    assert tool.settings["quests_tracked"] == [1004]
+
+
+def test_no_panel_restores_todays_rows(make):
+    tool = make()
+    follow(tool, mirror(3, 2))
+    tool.settings["quests_expanded"] = 1001
+    for t in (1, 2):
+        tool.update(R(), RECT, t)
+    assert titles(tool) == [f"Snail {TIMES}3 · Shell {TIMES}10", "Heena"]
+    assert tool.settings["quests_tracked"] == [1001]
+
+
+def test_one_missing_panel_keeps_progress(make):
+    tool = make()
+    follow(tool, mirror(3, 2))
+    tool.settings["quests_expanded"] = 1001
+    tool.update(R(), RECT, 1)
+    assert titles(tool) == DONE_ROWS
+
+
+def test_close_on_a_followed_quest_comes_back(make):
+    from maplelens.tools.quest_helper.ui import CLOSE
+
+    tool = make()
+    follow(tool, mirror())
+    button(tool, CLOSE).click()
+    assert tool.settings["quests_tracked"] == [] and tool.settings["quests_followed"] == []
+    follow(tool, mirror())
+    assert tool.settings["quests_tracked"] == [1001]
+
+
+def test_open_quest_window_uses_progress(make):
+    tool = make()
+    r = replace(panel(mirror(3, 2)), quest=QuestOpen(MIRROR, True))
+    tool.update(r, RECT, 0)
+    assert titles(tool) == DONE_ROWS
+
+
+def test_bad_followed_setting_is_replaced(make):
+    tool = make(quests_followed="x")
+    assert tool.settings["quests_followed"] == []
+    tool = make(tracked=[], quests_followed=[1001, 999999])
+    assert tool.settings["quests_followed"] == []
