@@ -1016,6 +1016,7 @@ EXPECTED_TRACKER = {
     "tracker_dark_1920x1080_100.png": Tracker(
         5, False, (ARWEN, FILING, SHELL, donating(10), EVENT)
     ),
+    "tracker_two_1920x1080_100.png": Tracker(2, False, (EVENT, FILING)),  # over black
 }
 
 
@@ -1074,8 +1075,32 @@ def test_tracker_line_that_doesnt_read_is_partly():
     native = screen("tracker_a_1366x768_100.png")  # 768: the panel at (30, 0), 1:1
     y = 138  # the last block's line
     native[y + 13 : y + 29] = native[y - 3 : y + 13]  # the line again, 16 rows lower
-    native[y + 15 : y + 27, 54:61] = native[y + 15 : y + 27, 130:131]  # its need digit gone
+    native[y + 15 : y + 27, 54:61] = native[y + 15 : y + 27, 33:34]  # its need digit gone
     assert read_quest_tracker(native, native, 1.0) == PARTLY
+
+
+@needs_ocr
+@pytest.mark.parametrize("middle", ["0", None])
+def test_tracker_three_digit_need_with_its_middle_hidden_is_partly(middle):
+    """ "0 / 1 Arwen's..." made "0 / 2?0 Arwen's..." (200 is the largest need in
+    quests.json): with the middle digit there it reads 200; hidden, the last "0" must not
+    pass as the text after a need of 2."""
+    from maplelens.readers import quest_tracker
+    from maplelens.readers.window import font
+
+    quest_tracker._words.clear()
+    glyph = dict(font("tracker_font"))
+    native = screen("tracker_a_1366x768_100.png")  # 768: the panel at (30, 0), 1:1
+    rows = slice(40, 53)  # the first block's line, as its glyph templates' 13 rows
+    native[rows, 66:] = native[rows, 54:-12].copy()  # the text: two digits later
+    native[rows, 54:72] = native[rows, 33:34]  # the need's three slots (x 54, 60, 66) blank
+    for x, ch in ((54, "2"), (60, middle), (66, "0")):
+        if ch:
+            native[rows, x : x + 7][glyph[ch] < 128] = 0
+    line = TrackerLine(0, 200, ARWEN.lines[0].text)
+    want = Tracker(3, False, (TrackerQuest(ARWEN.name, (line,)), FILING, SHELL))
+    want = want if middle else PARTLY
+    assert read_quest_tracker(native, native, 1.0) == want
 
 
 def test_tracker_block_past_the_count_is_partly(monkeypatch):
@@ -1097,7 +1122,12 @@ def test_tracker_garbled_name_is_partly(monkeypatch):
 
 @needs_ocr
 @pytest.mark.parametrize(
-    "name", ["tracker_three_1920x1080_100.png", "tracker_eight_1920x1080_100.png"]
+    "name",
+    [
+        "tracker_three_1920x1080_100.png",
+        "tracker_eight_1920x1080_100.png",
+        "tracker_two_1920x1080_100.png",
+    ],
 )
 def test_tracker_reads_at_every_offset(name):  # native drops 0-5: to ceil(2 * 1080/768) = 3 px
     """Dropping native rows and columns moves the panel to another sub-pixel offset."""

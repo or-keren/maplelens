@@ -56,11 +56,14 @@ ANCHORS = [("tracker_title", (3, 4))]
 # The panel's width (borders included), and a window tall enough for 5 blocks with spare
 # target lines: below the panel, align's crop is the map or black.
 PANEL_W, WIN_H = 222, 340
-# Ink: max over channels of (pixel / brightest in its 3x3) below this. On the grabs (67
-# frames, 1920x1080, blue sky, grass, hay, ropes and bricks behind the panel) 0.5 gave the
-# glyphs the game draws at 768 with the fewest stray pixels; the max channel alone (one
-# ratio) let coloured map edges through as ink.
-INK_RATIO = 0.5
+# Ink: max over channels of (pixel / brightest in its 3x3) below this; the max channel
+# alone (one ratio) let coloured map edges through as ink. Over a black map (the panel's
+# body at its darkest, 85) the glyphs' edge pixels are paler: tracker_two reads at every
+# offset with 0.55-0.6, and is broken at 0.525 and 0.65. On the grabs (67 frames, 1920x1080,
+# blue sky, grass, hay, ropes and bricks behind the panel) 0.5-0.55 read 37 panels whole,
+# 0.575 36 and 0.6 35 (the rest PARTLY; none misread at any of these). So the middle of
+# the dark panel's range.
+INK_RATIO = 0.575
 # Glyphs (window.read_number_text's way): a glyph scores GLYPH_MIN, and no other char
 # scores within GLYPH_MARGIN of it within 1 px. Clean reads score 1.0; 6 and 8 differ by
 # two pixels and score 0.933 on each other, so the margin sits under their 0.067 gap. On
@@ -69,13 +72,15 @@ GLYPH_MIN, GLYPH_MARGIN = 0.8, 0.05
 INK_MIN = 2  # ink pixels that make a column count (a stray map pixel is 1)
 NUMBERS_X, NUMBERS_W = 6, 64  # where "have / need" starts, and room for "999 / 999 X"
 # "have / need" sits at fixed columns (template x in the NUMBERS_X strip), the same on all
-# 411 lines read on the grabs and fixtures: the first have digit at HAVE_X, digits ADVANCE
+# lines read on the grabs and fixtures: the first have digit at HAVE_X, digits ADVANCE
 # apart, "/" SLASH_DX after the last have digit, the first need digit NEED_DX after "/",
-# and the text's first ink TEXT_GAP columns after the need's last template column
-# (measured 4, 6, 7 or 8; with the need's last digit gone it's 10 or more). So a digit
-# lost under the map leaves a gap where a glyph should be, and the line doesn't read.
+# and the text's first ink TEXT_GAP columns after the need's last digit's x (measured 10,
+# 11 or 12, "1" and wide digits alike). A digit's ink starts 1 column after its x, so a
+# need's next digit but one starts at 2 ADVANCE + 1 = 13: with the middle of "200" hidden,
+# the "0" left isn't taken for the text. So a digit lost under the map leaves a gap where
+# a glyph should be, and the line doesn't read.
 HAVE_X, ADVANCE, SLASH_DX, NEED_DX = 3, 6, 9, 6
-TEXT_GAP = (4, 8)
+TEXT_GAP = (10, 12)
 COUNT_X, COUNT_Y, COUNT_W = 75, 6, 14  # the title's n, right after its "("
 # Rows: block i's name at FIRST_Y + 48i; a target line LINE_DY under the name or the line
 # above it; the next name NAME_DY under the last line.
@@ -169,7 +174,8 @@ def _glyphs(band: np.ndarray) -> list[tuple[int, int, str, float]]:
         # ink spans are the template less its 1 px of background each side
         if any(a + 1 < b + bw - 1 and b + 1 < a + tw - 1 for b, bw, _, _ in chosen):
             continue
-        rival = max(s[max(a - 1, 0) : a + 2].max() for c, _, s in scores if c != ch)
+        # a wider char's scores end sooner: none there is no rival
+        rival = max(s[max(a - 1, 0) : a + 2].max(initial=-1) for c, _, s in scores if c != ch)
         chosen.append((a, tw, ch, sc - rival))
     return sorted(chosen)
 
@@ -183,8 +189,8 @@ def _plus(win: np.ndarray) -> bool:
 
 def _count(ink: np.ndarray) -> int | None:
     """The title's n, or None. The title's font differs from the lines' in its "/" and in
-    a pixel of 3 and 5, but its digits still score 0.88-1.0 on the lines' templates, with
-    margins of at least 0.119 (0, 1, 3, 4 and 5 seen; 2 not yet)."""
+    a pixel of 3 and 5, but its digits still score on the lines' templates, with margins
+    of at least 0.135 on the grabs and fixtures at every offset (0 to 5 all seen)."""
     g = _glyphs(ink[COUNT_Y - 3 : COUNT_Y + 12, COUNT_X : COUNT_X + COUNT_W])
     ok = g and g[0][0] == 0 and g[0][2].isdigit() and g[0][3] >= GLYPH_MARGIN
     return int(g[0][2]) if ok else None
@@ -222,11 +228,11 @@ def _line(ink: np.ndarray, y: int) -> tuple[int, int, int] | bool:
     covered = np.zeros(end, bool)
     for a, w, _, _ in seq:
         covered[a : a + w] = True
-    text = np.flatnonzero(cols[end:])
+    text = np.flatnonzero(cols[end:]) + end - need[-1][0]  # from the need's last digit's x
     if (cols[:end] & ~covered).any() or not (text.size and TEXT_GAP[0] <= text[0] <= TEXT_GAP[1]):
         return True
     have_n, need_n = (int("".join(g[2] for g in part)) for part in (have, need))
-    return have_n, need_n, NUMBERS_X + end + TEXT_GAP[0] - 1
+    return have_n, need_n, NUMBERS_X + end + 3
 
 
 def _unfollow(ink: np.ndarray, y: int) -> bool:
