@@ -1,10 +1,18 @@
+from dataclasses import replace
+
+from maplelens.readers.quest_tracker import TrackerLine, TrackerQuest
 from maplelens.tools.quest_helper.data import Item, Mob, Npc, Quest, QuestData
 from maplelens.tools.quest_helper.plan import (
+    SEVERAL,
+    TIMES,
+    UNKNOWN,
     Target,
     also_for,
     best_map,
     closest_map,
+    done_parts,
     find_quest,
+    match_block,
     npc_place,
     shared_name,
     show_giver,
@@ -12,6 +20,7 @@ from maplelens.tools.quest_helper.plan import (
     targets,
 )
 
+TL, TQ = TrackerLine, TrackerQuest
 NAMES = {"a": "Map A", "b": "Map B", "c": "Map C"}
 
 
@@ -162,3 +171,63 @@ def test_starts_closest_up_to_30():
     assert starts_closest(quest(mobs=((1, 20),), items=((10, 10),)))
     assert not starts_closest(quest(mobs=((1, 20),), items=((10, 11),)))
     assert starts_closest(quest(mobs=((1, 30),), items=((14, 50),), start_items=(14,)))
+
+
+def test_match_block_by_name():
+    d = data(quest(id=7, name="The Filing Error"))
+    assert match_block(d, TQ("The Filing Error", ())) == 7
+    assert match_block(d, TQ("The Fiiing Error", ())) == 7  # one letter off snaps
+    assert match_block(d, TQ("Nobody's Quest", ())) == UNKNOWN
+
+
+def test_cut_name_matches_by_prefix():
+    d = data(quest(id=7, name="A rainbow snail shell that makes wishes come true!?"))
+    assert match_block(d, TQ("A rainbow snail shell that makes...", ())) == 7
+    assert match_block(d, TQ("A rainbow snail shell that makes…", ())) == 7
+
+
+def test_shared_name_told_apart_by_lines():
+    a = quest(id=7, name="Donating", items=((10, 30),))
+    b = quest(id=8, name="Donating", items=((11, 30),))
+    d = replace(data(a), quests={7: a, 8: b})
+    assert match_block(d, TQ("Donating", (TL(0, 30, "Slime Gel"),))) == 8
+    assert match_block(d, TQ("Donating", ())) == SEVERAL
+
+
+def test_same_targets_are_several():
+    a = quest(id=7, name="Home", taker=1)
+    b = quest(id=8, name="Home", taker=2)
+    d = replace(data(a), quests={7: a, 8: b})
+    assert match_block(d, TQ("Home", ())) == SEVERAL
+
+
+def test_line_matches_despite_one_wrong_letter():
+    q = quest(mobs=((1, 20),), items=((10, 10),))
+    assert done_parts(data(q), q, (TL(10, 10, "Jr. Necki SkIn"),)) == {("item", 10)}
+
+
+def test_done_parts_need_have_at_least_need():
+    q = quest(mobs=((1, 20),), items=((10, 10),))
+    lines = (TL(20, 20, "Jr. Necki"), TL(9, 10, "Jr. Necki Skin"))
+    assert done_parts(data(q), q, lines) == {("mob", 1)}
+    assert done_parts(data(q), q, (TL(5, 7, "Jr. Necki"),)) == frozenset()  # need differs
+
+
+def test_done_monster_leaves_its_items_with_full_names():
+    q = quest(mobs=((1, 20),), items=((10, 10),), taker=1)
+    rows = targets(data(q), q, giver=False, hops=NONE, done=frozenset({("mob", 1)}))
+    assert [r.title for r in rows] == [f"Jr. Necki Skin {TIMES}10", "Luke"]
+
+
+def test_all_done_leaves_only_the_hand_in():
+    q = quest(mobs=((1, 20), (2, 5)), items=((10, 10), (12, 1)), taker=1)
+    done = frozenset({("mob", 1), ("mob", 2), ("item", 10), ("item", 12)})
+    assert [r.title for r in targets(data(q), q, giver=False, hops=NONE, done=done)] == ["Luke"]
+
+
+def test_no_progress_is_todays_rows():
+    q = quest(mobs=((1, 20),), items=((10, 10),), taker=1)
+    d = data(q)
+    assert targets(d, q, giver=False, hops=NONE, done=frozenset()) == targets(
+        d, q, giver=False, hops=NONE
+    )
