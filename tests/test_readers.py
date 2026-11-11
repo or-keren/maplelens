@@ -1147,3 +1147,11 @@ def test_read_all_fills_tracker():
     fixture = screen("tracker_a_1366x768_100.png")
     frame[: fixture.shape[0], -fixture.shape[1] :] = fixture
     assert read_all(frame, 1.0).tracker == EXPECTED_TRACKER["tracker_a_1366x768_100.png"]
+
+
+def test_tracker_title_zero_over_visible_blocks_is_partly(monkeypatch):
+    """A title digit misread as 0 while blocks show must not read as an empty panel."""
+    from maplelens.readers import quest_tracker
+
+    monkeypatch.setattr(quest_tracker, "_count", lambda ink: 0)
+    assert read_quest_tracker(*_window_args("tracker_three_1920x1080_100.png")) == PARTLY

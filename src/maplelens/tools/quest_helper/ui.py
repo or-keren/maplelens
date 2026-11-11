@@ -197,7 +197,8 @@ class QuestHelperTool:
         self._render()
 
     def _read_panel(self, t: Tracker | str | None) -> None:
-        """Follow the game's Quest Helper: see the module's spec for the states."""
+        """Follow the game's Quest Helper; the states are in
+        docs/superpowers/specs/2026-11-11-quest-tracker-sync-design.md."""
         if t is None:
             self._no_panel += 1
             if self._no_panel >= GONE:  # one missed reading keeps everything
@@ -301,7 +302,7 @@ class QuestHelperTool:
     def _items(self) -> list:
         """Items are tuples, drawn in order: ("info", text), ("label", text),
         ("open", id, name, tracked, closest), ("head", id, name, expanded, closest),
-        ("row", title, sub, map id, at, npc, info), ("run", title, sub)."""
+        ("row", title, sub, map id, at, npc, info), ("run", title, sub), ("action", text)."""
         d, q = self._data, self._quest
         tracked = self._settings["quests_tracked"]
         out, top = self._top(q, tracked) if q is not None else ([], None)

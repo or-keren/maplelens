@@ -280,7 +280,7 @@ def read_quest_tracker(
     open, empty panel.
 
     Limit: the title is the anchor, at the panel's left, so a panel past the frame's
-    left or top edge isn't found and reads None.
+    left edge isn't found and reads None (past the top, the rows that remain still read).
     """
     native = frame if native is None else native
     scale = native.shape[0] / frame.shape[0] if scale is None else scale
@@ -289,14 +289,14 @@ def read_quest_tracker(
         return None
     win, at = hit
     fw = frame.shape[1]
-    if at[0] < 0 or at[0] + PANEL_W > fw:
+    if at[0] < 0 or at[0] + PANEL_W > fw + 1:  # 1 px of slack: the panel may touch the edge
         return UNREADABLE
     ink = _ink(win)
     n = _count(ink)
     if n is None or n > 5:
         return PARTLY
-    if n == 0:
-        return Tracker(0, False, ())
+    if n == 0:  # a 0 misread from a busy title would hide blocks: check below it
+        return PARTLY if _unfollow(ink, FIRST_Y) else Tracker(0, False, ())
     if _plus(win):
         return Tracker(n, True, ())
     quests = _blocks(frame, native, ink, at, n)

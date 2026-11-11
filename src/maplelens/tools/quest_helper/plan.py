@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from functools import lru_cache
 
 from maplelens.readers.map_name import snap_title
 from maplelens.readers.quest_tracker import TrackerLine, TrackerQuest
@@ -145,13 +146,19 @@ def _part(data: QuestData, quest: Quest, line: TrackerLine) -> Part | None:
     return named.get(snap_title(line.text, named.keys()))
 
 
+@lru_cache(maxsize=256)
+def _snap_quest(name: str, names: frozenset[str]) -> str:
+    """snap_title, cached: an unknown (event) name scans every title, every tick."""
+    return snap_title(name, names)
+
+
 def block_candidates(data: QuestData, block: TrackerQuest) -> list[Quest]:
     """The quests a block's name can be: by prefix when cut, else by the snapped name."""
     name = block.name
     if name.endswith((".", "…")):
         head = name.rstrip(".…")
         return [q for q in data.quests.values() if q.name.startswith(head)]
-    name = snap_title(name, {q.name for q in data.quests.values()})
+    name = _snap_quest(name, frozenset(q.name for q in data.quests.values()))
     return [q for q in data.quests.values() if q.name == name]
 
 
