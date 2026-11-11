@@ -36,7 +36,7 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
 
 - `src/maplelens/` — the package
   - `capture.py` (shared: `pick_window`) + `capture_win.py` / `capture_mac.py` — find the game window, grab its pixels
-  - `readers/` — screenshot → value (`glyphs`, `ocr`, `exp`, `level`, `job`, `map_name`, `minimap_pos` (`read_view`), `stat_window`, `skill_window`, `quest_window`; `read_all` in `__init__`); numbers via glyph templates, words (map, class, skill names) via the system OCR: `ocr.py` (shared) + `ocr_win.py` / `ocr_mac.py`. The draggable game windows (`window.py`, shared) are read differently: scaled from the window's own corner, digits by correlation with a margin, since exact templates miss at most sub-pixel offsets
+  - `readers/` — screenshot → value (`glyphs`, `ocr`, `exp`, `level`, `job`, `map_name`, `minimap_pos` (`read_view`), `stat_window`, `skill_window`, `quest_window`, `quest_tracker` (the game's Quest Helper panel); `read_all` in `__init__`); numbers via glyph templates, words (map, class, skill names) via the system OCR: `ocr.py` (shared) + `ocr_win.py` / `ocr_mac.py`. The draggable game windows (`window.py`, shared) are read differently: scaled from the window's own corner, digits by correlation with a margin, since exact templates miss at most sub-pixel offsets
   - `overlay.py` — the see-through `Layer` and draggable `Box` (its ••• menu button, `attach_menu`); `overlay_mac.py` — the macOS panels
   - `data/maps.json` — the map data; `data/minimaps/` — minimap pictures; `data/icon.ico` — the app icon (the exe, Setup and the tray)
   - `data/classes.json` — per-job advice (training maps, AP/SP plans, gear)

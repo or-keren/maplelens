@@ -36,7 +36,7 @@ BG_TOL = 12
 GLYPH_H = 13
 INK = 90  # grey below this is ink (dark digits on a light field)
 
-_font: list[tuple[str, np.ndarray]] = []
+_fonts: dict[str, list[tuple[str, np.ndarray]]] = {}
 
 
 def _gray(img: np.ndarray) -> np.ndarray:
@@ -108,12 +108,17 @@ def align(
     return win, (round(x0 / scale), round(y0 / scale))
 
 
-def _glyphs() -> list[tuple[str, np.ndarray]]:
-    if not _font:
-        for p in sorted((glyphs.TEMPLATES / "window_font").glob("*.png")):
-            img = glyphs.imread(p, cv2.IMREAD_GRAYSCALE)
-            _font.append((glyphs.CHAR_NAMES.get(p.stem, p.stem), img.astype(np.float32)))
-    return _font
+def font(name: str = "window_font") -> list[tuple[str, np.ndarray]]:
+    """The grey glyph templates in templates/<name>/ as (char, float32 image), cached."""
+    if name not in _fonts:
+        _fonts[name] = [
+            (
+                glyphs.CHAR_NAMES.get(p.stem, p.stem),
+                glyphs.imread(p, cv2.IMREAD_GRAYSCALE).astype(np.float32),
+            )
+            for p in sorted((glyphs.TEMPLATES / name).glob("*.png"))
+        ]
+    return _fonts[name]
 
 
 def read_number_text(win: np.ndarray, box: tuple[int, int, int, int]) -> str | None:
@@ -149,7 +154,7 @@ def _accepted(strip: np.ndarray) -> list[tuple[int, int, str]] | None:
     """Non-overlapping glyphs (ink start, ink end, char), left to right; None if one is
     ambiguous (another char within GLYPH_MARGIN of it, within 1 px, at any score)."""
     scores = {}
-    for ch, t in _glyphs():
+    for ch, t in font():
         if strip.shape[1] >= t.shape[1]:
             r = cv2.matchTemplate(strip, t, cv2.TM_CCOEFF_NORMED).max(axis=0)
             scores.setdefault(ch, []).append((t.shape[1], r))

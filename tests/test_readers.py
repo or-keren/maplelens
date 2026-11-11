@@ -11,6 +11,13 @@ from maplelens.readers.job import JOB_DX, JOB_DY, JOB_H, read_job
 from maplelens.readers.level import LV_DX, LV_DY, LV_H, LV_INK_HI, LV_INK_LO, LV_W, read_level
 from maplelens.readers.map_name import known_titles, read_map_name, snap_title
 from maplelens.readers.minimap_pos import read_player, read_view
+from maplelens.readers.quest_tracker import (
+    PARTLY,
+    Tracker,
+    TrackerLine,
+    TrackerQuest,
+    read_quest_tracker,
+)
 from maplelens.readers.quest_window import NAME_UNREADABLE, QuestOpen, read_quest_window
 from maplelens.readers.skill_window import SkillRow, SkillWindow, read_skill_window
 from maplelens.readers.stat_window import UNREADABLE, StatWindow, parse_stat, read_stat_window
@@ -233,7 +240,7 @@ def test_expected_matches_fixture_files():
     }
     assert set(EXPECTED) | set(EXPECTED_POS) | set(EXPECTED_STAT) | set(EXPECTED_SKILL) | set(
         EXPECTED_QUEST
-    ) | native_map == {p.name for p in SCREENS.glob("*.png")}
+    ) | set(EXPECTED_TRACKER) | native_map == {p.name for p in SCREENS.glob("*.png")}
 
 
 def test_exp_one_px_noise_is_never_another_value():
@@ -718,14 +725,14 @@ def test_number_text_ambiguous_glyph_is_none(monkeypatch):
     from maplelens.readers import window
 
     win = np.full((20, 40, 3), 222, np.uint8)
-    g = next(t for c, t in window._glyphs() if c == "8")
+    g = next(t for c, t in window.font() if c == "8")
     win[3:16, 5 : 5 + g.shape[1]] = g[..., None].astype(np.uint8)
     box = (0, 0, 40, 20)
     assert window.read_number_text(win, box) == "8"
     # An "8" that is mostly a "0": blend the middle row in.
     win[3 + 6, 5:12] = 222
     assert window.read_number_text(win, box) in (None, "0")  # never a confident wrong read
-    monkeypatch.setattr(window, "_font", [("8", g), ("B", g)])
+    monkeypatch.setitem(window._fonts, "window_font", [("8", g), ("B", g)])
     assert window.read_number_text(win, box) is None  # identical scores: no margin
 
 
@@ -734,7 +741,7 @@ def test_number_text_light_patch_off_the_glyphs_is_none():
     from maplelens.readers import window
 
     win = np.full((20, 40, 3), 222, np.uint8)
-    g = next(t for c, t in window._glyphs() if c == "8")
+    g = next(t for c, t in window.font() if c == "8")
     win[3:16, 5 : 5 + g.shape[1]] = g[..., None].astype(np.uint8)
     box = (0, 0, 40, 20)
     assert window.read_number_text(win, box) == "8"
@@ -982,3 +989,89 @@ def test_quest_reads_at_every_offset(name):
     for k in range(6):
         native = screen(name)[k:, k:]
         assert read_quest_window(_scaled(native, scale), native, scale) == EXPECTED_QUEST[name], k
+
+
+# Quest Helper crops: native, the panel's corner (it touches the crop's top and right
+# edges, as in the full frame). Names and targets are snapped to quests.json's, so a cut
+# name reads as the full name; "Maple Leaf" isn't in the data and reads as is.
+RAINBOW = "A rainbow snail shell that makes wishes come true!?"
+ARWEN = TrackerQuest("Arwen and the Glass Shoe", (TrackerLine(0, 1, "Arwen's Glass Shoe"),))
+FILING = TrackerQuest("The Filing Error", (TrackerLine(0, 25, "Torn Ledger Pages"),))
+SHELL = TrackerQuest(RAINBOW, (TrackerLine(0, 1, "Rainbow-colored Snail Shell"),))
+EVENT = TrackerQuest("[Event] The Journey Begins", (TrackerLine(0, 30, "Maple Leaf"),))
+
+
+def donating(have):
+    return TrackerQuest("Donating to Kerning City", (TrackerLine(have, 30, "Red Snail Shell"),))
+
+
+EXPECTED_TRACKER = {
+    "tracker_one_1920x1080_100.png": Tracker(1, False, (FILING,)),
+    "tracker_three_1920x1080_100.png": Tracker(3, False, (FILING, SHELL, donating(0))),
+    "tracker_min_1920x1080_100.png": Tracker(3, True, ()),
+    "tracker_empty_1920x1080_100.png": Tracker(0, False, ()),
+    "tracker_a_1366x768_100.png": Tracker(3, False, (ARWEN, FILING, SHELL)),
+    "tracker_eight_1920x1080_100.png": Tracker(4, False, (ARWEN, FILING, SHELL, donating(28))),
+    "tracker_event_1920x1080_100.png": Tracker(4, False, (ARWEN, FILING, SHELL, EVENT)),
+    "tracker_dark_1920x1080_100.png": Tracker(
+        5, False, (ARWEN, FILING, SHELL, donating(10), EVENT)
+    ),
+}
+
+
+@needs_ocr
+@pytest.mark.parametrize("name", sorted(EXPECTED_TRACKER))
+def test_read_quest_tracker(name):
+    assert read_quest_tracker(*_window_args(name)) == EXPECTED_TRACKER[name]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "quest_progress_1920x1080_100.png",
+        "stat_a_1920x1080_100.png",
+        "title_ellinia_1920x1080_100.png",
+        "minimap_a_1920x1080_100.png",
+    ],
+)
+def test_no_tracker(name):
+    assert read_quest_tracker(*_window_args(name)) is None
+
+
+def test_tracker_cut_by_the_frame_edge_is_unreadable():
+    native = screen("tracker_three_1920x1080_100.png")[:, :-120]  # the right edge cuts it
+    scale = 1080 / 768
+    assert read_quest_tracker(_scaled(native, scale), native, scale) == UNREADABLE
+
+
+@needs_ocr
+def test_tracker_block_painted_over_is_partly():
+    """A block covered (here: painted with the panel's own colour) reads fewer than n."""
+    native = screen("tracker_three_1920x1080_100.png")
+    native[168:210, 40:340] = (130, 130, 142)  # the third block's name and line; title 3/5
+    scale = 1080 / 768
+    assert read_quest_tracker(_scaled(native, scale), native, scale) == PARTLY
+
+
+@needs_ocr
+@pytest.mark.parametrize(
+    "name", ["tracker_three_1920x1080_100.png", "tracker_eight_1920x1080_100.png"]
+)
+def test_tracker_reads_at_every_offset(name):  # native drops 0-5: to ceil(2 * 1080/768) = 3 px
+    """Dropping native rows and columns moves the panel to another sub-pixel offset."""
+    from maplelens.readers import quest_tracker
+
+    scale = 1080 / 768
+    for k in range(6):
+        quest_tracker._words.clear()  # OCR every offset, not just the first
+        native = screen(name)[k:, k:]
+        got = read_quest_tracker(_scaled(native, scale), native, scale)
+        assert got == EXPECTED_TRACKER[name], k
+
+
+@needs_ocr
+def test_read_all_fills_tracker():
+    frame = np.zeros((768, 1366, 3), np.uint8)
+    fixture = screen("tracker_a_1366x768_100.png")
+    frame[: fixture.shape[0], -fixture.shape[1] :] = fixture
+    assert read_all(frame, 1.0).tracker == EXPECTED_TRACKER["tracker_a_1366x768_100.png"]
