@@ -16,7 +16,6 @@ bottom at 12+48n.
 """
 
 import json
-import re
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from pathlib import Path
@@ -24,7 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maplelens.readers import map_name, ocr, quest_window, window
+from maplelens.readers import glyphs, map_name, ocr, quest_window, window
 from maplelens.readers.window import UNREADABLE
 
 PARTLY = "tracker partly read"  # found, but fewer blocks read than its count, or one garbled
@@ -67,17 +66,30 @@ INK_RATIO = 0.5
 # two pixels and score 0.933 on each other, so the margin sits under their 0.067 gap. On
 # the grabs and fixtures (416 lines) the smallest accepted gap was 0.067; no misread.
 GLYPH_MIN, GLYPH_MARGIN = 0.8, 0.05
-ADVANCE = 6  # digits are monospaced: 5 px wide, 1 apart
-WORD_GAP = 3  # empty columns after the need's last digit ("30 Red": 4, "0 / 1 Arwen": 6)
 INK_MIN = 2  # ink pixels that make a column count (a stray map pixel is 1)
-NUMBERS_X, NUMBERS_W = 6, 64  # where "have / need" starts, and room for "99 / 99"
+NUMBERS_X, NUMBERS_W = 6, 64  # where "have / need" starts, and room for "999 / 999 X"
+# "have / need" sits at fixed columns (template x in the NUMBERS_X strip), the same on all
+# 411 lines read on the grabs and fixtures: the first have digit at HAVE_X, digits ADVANCE
+# apart, "/" SLASH_DX after the last have digit, the first need digit NEED_DX after "/",
+# and the text's first ink TEXT_GAP columns after the need's last template column
+# (measured 4, 6, 7 or 8; with the need's last digit gone it's 10 or more). So a digit
+# lost under the map leaves a gap where a glyph should be, and the line doesn't read.
+HAVE_X, ADVANCE, SLASH_DX, NEED_DX = 3, 6, 9, 6
+TEXT_GAP = (4, 8)
 COUNT_X, COUNT_Y, COUNT_W = 75, 6, 14  # the title's n, right after its "("
 # Rows: block i's name at FIRST_Y + 48i; a target line LINE_DY under the name or the line
-# above it; the next name NAME_DY under the last line. The panel's bottom: TOP_H + BLOCK_H n.
+# above it; the next name NAME_DY under the last line.
 FIRST_Y, LINE_DY, NAME_DY = 26, 16, 32
-TOP_H, BLOCK_H = 12, 48
 TEXT_X0, TEXT_X1 = 4, 205  # text columns, left of the unfollow button (208-218)
 TEXT_H = 13  # a text box: from 2 rows over a line's ink rows, descenders included
+# Every block's name row has an unfollow button (templates/tracker_unfollow.png, its ink,
+# right of TEXT_X1): it tells a name from a target line, and finds a block past the
+# count. Scores (TM_CCOEFF_NORMED on the ink): 0.74-1.0 on every block of the fixtures
+# and grabs, the button half covered included; at most 0.25 a block below the last one.
+UNFOLLOW_X, UNFOLLOW_MIN = 202, 0.5
+# A row under a block's last line holds no ink but a further line: at most 3 ink columns
+# (stray map pixels) seen in the gap between blocks.
+GAP_INK = 6
 # The minimize button (blue, x 195-204, y 5-14): "+" shows a white upright in its centre
 # (rows 6-8, columns 198-201); "-" has none. Measured: 4 non-blue pixels with +, 0 with -.
 PLUS = (198, 6, 4, 3)
@@ -178,54 +190,76 @@ def _count(ink: np.ndarray) -> int | None:
     return int(g[0][2]) if ok else None
 
 
-def _numbers(ink: np.ndarray, y: int) -> tuple[int, int, int] | None:
-    """(have, need, x after the need) of the "have / need" whose ink rows start at `y`,
-    or None. Every ink column up to the need's end must be a glyph's, digits one ADVANCE
-    apart, and WORD_GAP empty columns must follow."""
+def _digits(at: dict, x: int) -> list:
+    """The glyphs of `at` (template x -> glyph) that are digits from `x`, ADVANCE apart."""
+    out = []
+    while x in at and at[x][2].isdigit():
+        out.append(at[x])
+        x += ADVANCE
+    return out
+
+
+def _line(ink: np.ndarray, y: int) -> tuple[int, int, int] | bool:
+    """(have, need, x where the text starts) of the target line whose ink rows start at
+    `y`; else True if a digit or "/" still shows at a line's columns (a line that doesn't
+    read), False if not (or past the window). Every glyph must sit at its column (see
+    HAVE_X), every ink column up to the need's end must be a glyph's, and the text must
+    start TEXT_GAP after it."""
+    if y < 3 or y + 12 > ink.shape[0]:
+        return False
     band = ink[y - 3 : y + 12, NUMBERS_X : NUMBERS_X + NUMBERS_W]
-    seq, part = [], 0  # part 0: have digits, 1: the slash, 2: need digits
-    for g in _glyphs(band):
-        a, _, ch, _ = g
-        if part == 0 and seq and ch == "/":
-            part = 1
-        elif part == 1 and ch.isdigit():
-            part = 2
-        elif not (ch.isdigit() and part in (0, 2) and (not seq or a - seq[-1][0] == ADVANCE)):
-            break
-        seq.append(g)
-    m = re.fullmatch(r"(\d+)/(\d+)", "".join(g[2] for g in seq))
-    if not m or min(g[3] for g in seq) < GLYPH_MARGIN:
-        return None
+    at = {g[0]: g for g in _glyphs(band)}
+    slashes = (HAVE_X + SLASH_DX, HAVE_X + ADVANCE + SLASH_DX)
+    seen = HAVE_X in at or any(x in at and at[x][2] == "/" for x in slashes)
+    have = _digits(at, HAVE_X)
+    slash = at.get(have[-1][0] + SLASH_DX) if have else None
+    need = _digits(at, slash[0] + NEED_DX) if slash and slash[2] == "/" else []
+    seq = [*have, slash, *need]
+    if not need or min(g[3] for g in seq) < GLYPH_MARGIN:
+        return seen
     cols = band[3:11].sum(axis=0) >= INK_MIN
-    end = seq[-1][0] + seq[-1][1] - 1  # the need's last template column
+    end = need[-1][0] + need[-1][1] - 1  # the need's last template column
     covered = np.zeros(end, bool)
     for a, w, _, _ in seq:
         covered[a : a + w] = True
-    if (cols[:end] & ~covered).any() or cols[end : end + WORD_GAP].any():
-        return None
-    return int(m[1]), int(m[2]), NUMBERS_X + end + WORD_GAP
+    text = np.flatnonzero(cols[end:])
+    if (cols[:end] & ~covered).any() or not (text.size and TEXT_GAP[0] <= text[0] <= TEXT_GAP[1]):
+        return True
+    have_n, need_n = (int("".join(g[2] for g in part)) for part in (have, need))
+    return have_n, need_n, NUMBERS_X + end + TEXT_GAP[0] - 1
+
+
+def _unfollow(ink: np.ndarray, y: int) -> bool:
+    """Whether the name row starting at `y` has its unfollow button."""
+    t = cv2.cvtColor(glyphs.load("tracker_unfollow"), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    band = ink[max(y - 5, 0) : y + 12, UNFOLLOW_X:PANEL_W]
+    if band.shape[0] < t.shape[0]:
+        return False
+    strip = np.where(band, 0, 255).astype(np.float32)
+    return cv2.matchTemplate(strip, t, cv2.TM_CCOEFF_NORMED).max() >= UNFOLLOW_MIN
 
 
 def _text(frame: np.ndarray, native: np.ndarray, box, ink: np.ndarray, snap) -> str:
     """The text in `box` (normalized x, y, w, h) as `snap` names it, else as first read;
-    '' if none. `ink` is the box's ink: a snapped text is kept by it, so the map moving
-    behind the panel costs no OCR; one that didn't snap is read again next time
-    (ocr.read_lines caches by mask)."""
+    '' if none. `ink` is the box's ink, and the read is kept by it, so the map moving
+    behind the panel costs no OCR; but a name that snaps to nothing is read again next
+    time (ocr.read_lines caches by mask), as it makes the panel PARTLY."""
     key = ink.tobytes() + snap.__name__.encode()
     if key in _words:
         return _words[key]
     c = ocr.crop(frame, native, box).astype(np.float32)
     ratio = (c / np.maximum(cv2.dilate(c, np.ones((OCR_BG, OCR_BG), np.uint8)), 1)).max(axis=2)
-    first = None
+    reads = []
     for r in OCR_RATIOS:
-        text = " ".join(ocr.read_lines(ratio < r) or []).strip()
-        first = text if first is None else first
-        if name := snap(text):
-            if len(_words) >= 64:
-                _words.clear()
-            _words[key] = name
-            return name
-    return first
+        reads.append(" ".join(ocr.read_lines(ratio < r) or []).strip())
+        if snap(reads[-1]):
+            break
+    name = snap(reads[-1])
+    if name or snap is _target:
+        if len(_words) >= 64:
+            _words.clear()
+        _words[key] = name or reads[0]
+    return name or reads[0]
 
 
 def read_quest_tracker(
@@ -248,7 +282,7 @@ def read_quest_tracker(
     if hit is None:
         return None
     win, at = hit
-    fh, fw = frame.shape[:2]
+    fw = frame.shape[1]
     if at[0] < 0 or at[0] + PANEL_W > fw:
         return UNREADABLE
     ink = _ink(win)
@@ -259,32 +293,47 @@ def read_quest_tracker(
         return Tracker(0, False, ())
     if _plus(win):
         return Tracker(n, True, ())
-    if at[1] + TOP_H + BLOCK_H * n > fh:
-        return UNREADABLE
     quests = _blocks(frame, native, ink, at, n)
-    return Tracker(n, False, quests) if quests else PARTLY
+    return quests if isinstance(quests, str) else Tracker(n, False, quests)
 
 
 def _blocks(frame: np.ndarray, native: np.ndarray, ink: np.ndarray, at, n: int):
-    """The panel's `n` quest blocks, top down, or None if one doesn't read: a name that
-    snaps to no known quest (every Classic quest has one, so it's garbled, and the quest
-    it really is would look unfollowed), or a first line whose numbers don't read."""
+    """The panel's `n` quest blocks, top down; UNREADABLE if the frame's bottom cuts a
+    row to read; PARTLY if a block doesn't read or the rows don't fit `n` blocks:
+    - a name row with no unfollow button, or a name that snaps to no known quest (every
+      Classic quest has one, so it's garbled, and the quest it really is would look
+      unfollowed);
+    - a first line whose numbers don't read;
+    - a row under a block's last line showing a line's digits, or any ink between two
+      blocks (a further line that doesn't read);
+    - a block past the count (its title digit misread low).
+    The check for a block past the count is skipped past the frame: the panel sits at
+    the frame's top, so that's only a short crop."""
+    known = quest_window.known_quest_names()
+
+    def seen(y: int) -> bool:  # the frame shows the row from `y`
+        return at[1] + y + TEXT_H <= frame.shape[0]
 
     def text(x: int, y: int, snap) -> str:  # the text line from (x, y) to TEXT_X1
         box = (at[0] + x, at[1] + y - 2, TEXT_X1 - x, TEXT_H)
         return _text(frame, native, box, ink[y - 2 : y - 2 + TEXT_H, x:TEXT_X1], snap)
 
     quests, y = [], FIRST_Y
-    for _ in range(n):
-        name = ink[y : y + 10, TEXT_X0:TEXT_X1].any() and text(TEXT_X0, y, _name)
-        if name not in quest_window.known_quest_names():
-            return None
+    for i in range(n):
+        if not seen(y + LINE_DY):
+            return UNREADABLE
+        name = _unfollow(ink, y) and text(TEXT_X0, y, _name)
+        if name not in known:
+            return PARTLY
         lines, y = [], y + LINE_DY
-        while nums := _numbers(ink, y):
-            lines.append(TrackerLine(nums[0], nums[1], text(nums[2], y, _target)))
+        while seen(y) and isinstance(line := _line(ink, y), tuple):
+            lines.append(TrackerLine(line[0], line[1], text(line[2], y, _target)))
             y += LINE_DY
-        if not lines:
-            return None
+        if not seen(y):
+            return UNREADABLE
+        gap = i < n - 1 and (ink[y : y + 10, TEXT_X0:TEXT_X1].sum(axis=0) >= INK_MIN).sum()
+        if not lines or line or gap >= GAP_INK:
+            return PARTLY
         quests.append(TrackerQuest(name, tuple(lines)))
         y += NAME_DY - LINE_DY
-    return tuple(quests)
+    return PARTLY if seen(y) and _unfollow(ink, y) else tuple(quests)

@@ -1053,6 +1053,39 @@ def test_tracker_block_painted_over_is_partly():
     assert read_quest_tracker(_scaled(native, scale), native, scale) == PARTLY
 
 
+@needs_ocr
+@pytest.mark.parametrize("cols", [(56, 63), (65, 72), (77, 82), (86, 93), (94, 101)])
+def test_tracker_digit_painted_over_is_partly(cols):
+    """Any one glyph of "28 / 30" gone (2, 8, /, 3, 0) leaves no number to misread."""
+    from maplelens.readers import quest_tracker
+
+    quest_tracker._words.clear()
+    native = screen("tracker_eight_1920x1080_100.png")
+    native[260:276, slice(*cols)] = (130, 130, 142)  # the fourth block's line
+    scale = 1080 / 768
+    assert read_quest_tracker(_scaled(native, scale), native, scale) == PARTLY
+
+
+@needs_ocr
+def test_tracker_line_that_doesnt_read_is_partly():
+    """A second line under the last block reads (two lines), but with its need hidden
+    ("0 /") it makes the panel PARTLY: below the last block the map leaves too much ink
+    to tell a line from it, so the line's own glyphs must tell."""
+    native = screen("tracker_a_1366x768_100.png")  # 768: the panel at (30, 0), 1:1
+    y = 138  # the last block's line
+    native[y + 13 : y + 29] = native[y - 3 : y + 13]  # the line again, 16 rows lower
+    native[y + 15 : y + 27, 54:61] = native[y + 15 : y + 27, 130:131]  # its need digit gone
+    assert read_quest_tracker(native, native, 1.0) == PARTLY
+
+
+def test_tracker_block_past_the_count_is_partly(monkeypatch):
+    """A title digit read low (2 of 3 blocks) leaves a block past the count."""
+    from maplelens.readers import quest_tracker
+
+    monkeypatch.setattr(quest_tracker, "_count", lambda ink: 2)
+    assert read_quest_tracker(*_window_args("tracker_three_1920x1080_100.png")) == PARTLY
+
+
 def test_tracker_garbled_name_is_partly(monkeypatch):
     """A name that snaps to no known quest (a busy map behind it) never reads as a quest."""
     from maplelens.readers import quest_tracker
