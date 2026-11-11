@@ -39,8 +39,7 @@ class TrackerLine:
 
 @dataclass(frozen=True)
 class TrackerQuest:
-    name: str  # snapped to the one known quest name it reads as (a cut name gives the
-    # full name); else as read, a cut name keeping its trailing dots
+    name: str  # the one known quest name it reads as (a cut name gives the full name)
     lines: tuple[TrackerLine, ...]
 
 
@@ -235,9 +234,10 @@ def read_quest_tracker(
     """The Quest Helper in `frame` (normalized), read from `native` (default `frame`).
 
     None if there's no panel; UNREADABLE if the frame's edge cuts it; PARTLY if its
-    count doesn't read, or fewer blocks read than the count (one covered, or a name or
-    a line's numbers that don't read). A "+" (minimize) button means minimized, but
-    "Quest Helper (0/5)" shows one too and reads as an open, empty panel.
+    count doesn't read, or fewer blocks read than the count (one covered, a name that
+    snaps to no known quest, or a line's numbers that don't read). A "+" (minimize)
+    button means minimized, but "Quest Helper (0/5)" shows one too and reads as an
+    open, empty panel.
 
     Limit: the title is the anchor, at the panel's left, so a panel past the frame's
     left or top edge isn't found and reads None.
@@ -266,8 +266,9 @@ def read_quest_tracker(
 
 
 def _blocks(frame: np.ndarray, native: np.ndarray, ink: np.ndarray, at, n: int):
-    """The panel's `n` quest blocks, top down, or None if one doesn't read (an empty
-    name, or a first line whose numbers don't read)."""
+    """The panel's `n` quest blocks, top down, or None if one doesn't read: a name that
+    snaps to no known quest (every Classic quest has one, so it's garbled, and the quest
+    it really is would look unfollowed), or a first line whose numbers don't read."""
 
     def text(x: int, y: int, snap) -> str:  # the text line from (x, y) to TEXT_X1
         box = (at[0] + x, at[1] + y - 2, TEXT_X1 - x, TEXT_H)
@@ -276,8 +277,10 @@ def _blocks(frame: np.ndarray, native: np.ndarray, ink: np.ndarray, at, n: int):
     quests, y = [], FIRST_Y
     for _ in range(n):
         name = ink[y : y + 10, TEXT_X0:TEXT_X1].any() and text(TEXT_X0, y, _name)
+        if name not in quest_window.known_quest_names():
+            return None
         lines, y = [], y + LINE_DY
-        while name and (nums := _numbers(ink, y)):
+        while nums := _numbers(ink, y):
             lines.append(TrackerLine(nums[0], nums[1], text(nums[2], y, _target)))
             y += LINE_DY
         if not lines:

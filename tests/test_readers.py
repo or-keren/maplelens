@@ -1053,6 +1053,15 @@ def test_tracker_block_painted_over_is_partly():
     assert read_quest_tracker(_scaled(native, scale), native, scale) == PARTLY
 
 
+def test_tracker_garbled_name_is_partly(monkeypatch):
+    """A name that snaps to no known quest (a busy map behind it) never reads as a quest."""
+    from maplelens.readers import quest_tracker
+
+    monkeypatch.setattr(quest_tracker, "_words", {})
+    monkeypatch.setattr(quest_tracker.ocr, "read_lines", lambda m: ["Al wen nnd tl{e GIass"])
+    assert read_quest_tracker(*_window_args("tracker_one_1920x1080_100.png")) == PARTLY
+
+
 @needs_ocr
 @pytest.mark.parametrize(
     "name", ["tracker_three_1920x1080_100.png", "tracker_eight_1920x1080_100.png"]
