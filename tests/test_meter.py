@@ -177,12 +177,29 @@ def test_covered_level_up_never_negative():
     assert m.rate(150).pct_per_min > 0
 
 
+def _no_map(m, t0, t1, raw, pct):
+    """Readings every 10 s from t0 to t1 with no gain and the map unreadable."""
+    for t in range(t0, t1, 10):
+        m.feed(R(t, raw, pct, map_name=None))
+
+
 def test_paused_gain_not_credited_to_segment():
     m = ExpMeter()
-    steady(m, 3)  # segment pct 1.0
-    feed(m, 90, 1150, 11.5, map_name=None)
+    steady(m, 3)  # segment pct 1.0, counted live from the gain at 60.5
+    _no_map(m, 70, 200, 1100, 11.0)  # longer than HOLD_S
+    feed(m, 200, 1150, 11.5, map_name=None)  # after an idle stretch: starts the clock
+    feed(m, 230, 1200, 12.0, map_name=None)
     assert m.open_segment().pct == pytest.approx(1.0)
-    assert m.rate(150).pct_per_min == pytest.approx(1.5 / (90 / 60))
+    assert m.rate(231).pct_per_min == pytest.approx(1.0)  # 60.5's and 230.5's gains, 1 min
+
+
+def test_a_map_unread_for_a_while_still_counts():
+    m = ExpMeter()
+    steady(m, 5)  # counted gains at 30..120: 120 s
+    for i in range(1, 4):  # a minute of kills with the minimap's title covered
+        feed(m, 120 + 30 * i, 1200 + 50 * i, 12 + 0.5 * i, map_name=None)
+    assert m.session().active_s == pytest.approx(210)
+    assert m.open_segment().active_s == pytest.approx(210)
 
 
 def test_single_dropped_frame_keeps_accrual():
@@ -394,7 +411,8 @@ def test_session_kept_while_game_gone():
 def test_session_skips_paused_gains():
     m = ExpMeter()
     steady(m, 5)
-    feed(m, 150, 1250, 12.5, map_name=None)  # map unreadable: not counted
+    _no_map(m, 130, 260, 1200, 12.0)  # map unreadable longer than HOLD_S
+    feed(m, 270, 1250, 12.5, map_name=None)  # not counted
     assert m.session().active_s == pytest.approx(120)
 
 

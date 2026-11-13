@@ -58,13 +58,28 @@ class Segment:
     gains: list[tuple[float, int, float, float]] = field(default_factory=list, repr=False)
 
 
+# A map, job or level that stops reading in a frame that shows the game keeps its value this
+# long: a window over the minimap, or a misread, isn't the player leaving it.
+HOLD_S = 120
+
+
 class _Confirmed:
-    """A field's value, which only changes once the same raw value arrives twice in a row."""
+    """A field's value, which only changes once the same raw value arrives twice in a row;
+    with `hold_s`, None only after it has read None for that long in frames at times `t`."""
 
-    def __init__(self):
+    def __init__(self, hold_s: float = 0):
         self.last = self.value = None
+        self.hold_s = hold_s
+        self._none_since: float | None = None
 
-    def update(self, v) -> bool:
+    def update(self, v, t: float | None = None) -> bool:
+        if v is not None or t is None:
+            self._none_since = None
+        elif self.value is not None and self.hold_s:
+            if self._none_since is None:
+                self._none_since = t
+            if t - self._none_since < self.hold_s:
+                return False
         changed = v == self.last and v != self.value
         if changed:
             self.value = v
@@ -97,8 +112,9 @@ class ExpMeter:
         self.idle_cutoff_s = idle_cutoff_s
         self.jump_factor = jump_factor
         self.window_s = window_s
-        self._exp, self._level, self._job, self._map = fields = tuple(
-            _Confirmed() for _ in range(4)
+        self._exp, self._level, self._job, self._map = fields = (
+            _Confirmed(),
+            *(_Confirmed(HOLD_S) for _ in range(3)),
         )
         self._fields = fields
         self._base: tuple[ExpValue, int | None] | None = None  # last non-None exp and its level
@@ -118,7 +134,7 @@ class ExpMeter:
     def feed(self, r: Reading | None) -> None:
         t = r.t if r else None
         vals = (r.exp, r.level, r.job, r.map_name) if r else (None,) * 4
-        exp_ch, *_ = (f.update(v) for f, v in zip(self._fields, vals, strict=True))
+        exp_ch, *_ = (f.update(v, t) for f, v in zip(self._fields, vals, strict=True))
 
         level = self._level.value
         ctx = (self._map.value, self._job.value, level)
@@ -141,7 +157,7 @@ class ExpMeter:
             self._seg = Segment(t, t, *ctx[:2], level)
             self._last_event_t = t
 
-        # 3. map, job or level confirmed unreadable: pause accrual, keep the segment
+        # 3. map, job or level confirmed unreadable (HOLD_S of it): pause accrual, keep the segment
         if None in ctx:
             self._last_event_t = None
 
