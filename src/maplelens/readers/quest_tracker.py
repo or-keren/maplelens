@@ -51,8 +51,11 @@ class Tracker:
 
 # The anchor: the "Quest Helper" title text, cut from tracker_a_1366x768_100.png (the 768
 # look), 3 px right of and 4 px under the window's top-left. Coarse scores: 1.00 at 1366,
-# 0.90-0.91 on the 1920 fixtures; below 0.4 on every other fixture.
-ANCHORS = [("tracker_title", (3, 4))]
+# 0.90-0.91 on the 1920 fixtures; below 0.4 on every other fixture. The Mac client draws
+# the title a little differently (Q, "st H"): there it scored 0.70-0.76, at ANCHOR_MIN, and
+# picked a half-pixel-off start at 2x. tracker_title_mac is cut from a 2732x1536 Mac grab;
+# its text starts a pixel further right of the panel's corner than Windows' does.
+ANCHORS = [("tracker_title", (3, 4)), ("tracker_title_mac", (4, 4))]
 # The panel's width (borders included), and a window tall enough for 5 blocks with spare
 # target lines: below the panel, align's crop is the map or black.
 PANEL_W, WIN_H = 222, 340
@@ -190,9 +193,10 @@ def _plus(win: np.ndarray) -> bool:
 def _count(ink: np.ndarray) -> int | None:
     """The title's n, or None. The title's font differs from the lines' in its "/" and in
     a pixel of 3 and 5, but its digits still score on the lines' templates, with margins
-    of at least 0.135 on the grabs and fixtures at every offset (0 to 5 all seen)."""
+    of at least 0.135 on the grabs and fixtures at every offset (0 to 5 all seen). The
+    Mac's title is a pixel wider before the n, so it sits at 1 there."""
     g = _glyphs(ink[COUNT_Y - 3 : COUNT_Y + 12, COUNT_X : COUNT_X + COUNT_W])
-    ok = g and g[0][0] == 0 and g[0][2].isdigit() and g[0][3] >= GLYPH_MARGIN
+    ok = g and g[0][0] in (0, 1) and g[0][2].isdigit() and g[0][3] >= GLYPH_MARGIN
     return int(g[0][2]) if ok else None
 
 

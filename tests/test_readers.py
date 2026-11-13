@@ -1212,6 +1212,15 @@ ARWEN = TrackerQuest("Arwen and the Glass Shoe", (TrackerLine(0, 1, "Arwen's Gla
 FILING = TrackerQuest("The Filing Error", (TrackerLine(0, 25, "Torn Ledger Pages"),))
 SHELL = TrackerQuest(RAINBOW, (TrackerLine(0, 1, "Rainbow-colored Snail Shell"),))
 EVENT = TrackerQuest("[Event] The Journey Begins", (TrackerLine(0, 30, "Maple Leaf"),))
+MAYA = TrackerQuest(
+    "Maya's Second Collection",
+    (
+        TrackerLine(123, 20, "Pig's Ribbon"),
+        TrackerLine(21, 20, "Bubbling's Huge Bubble"),
+        TrackerLine(20, 20, "Fire Boar's Tooth"),
+        TrackerLine(20, 20, "Tablecloth"),
+    ),
+)
 
 
 def donating(have):
@@ -1230,6 +1239,9 @@ EXPECTED_TRACKER = {
         5, False, (ARWEN, FILING, SHELL, donating(10), EVENT)
     ),
     "tracker_two_1920x1080_100.png": Tracker(2, False, (EVENT, FILING)),  # over black
+    "tracker_mac_2732x1536_100.png": Tracker(0, False, ()),  # the Mac's title, windowed (2x)
+    "tracker_mac_3024x1700_100.png": Tracker(0, False, ()),  # and fullscreen (2.21x)
+    "tracker_mac_maya_3024x1700_100.png": Tracker(1, False, (MAYA,)),
 }
 
 
