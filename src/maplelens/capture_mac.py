@@ -1,6 +1,7 @@
 """macOS: find the game window and grab its pixels. Window geometry and screen capture only."""
 
 import functools
+import time
 
 import cv2
 import numpy as np
@@ -159,8 +160,20 @@ def grab(wid: int, rect: tuple[int, int, int, int]) -> np.ndarray:
     return crop_bgr(rgb, rect)
 
 
-def has_access() -> bool:
-    return bool(Quartz.CGPreflightScreenCaptureAccess())
+# Asking for Screen Recording access goes through the same macOS service as every capture
+# (window captures run through ScreenCaptureKit's helper now): asked on each tick, it jammed
+# that service within 30 s while the game was in front, and every capture on the Mac, ours
+# and others', waited 30 s and failed. Asked every 10 s, captures kept working.
+ACCESS_CHECK_S = 10
+_access: dict[str, float | bool] = {}  # "at": when it was last asked, "ok": the answer
+
+
+def has_access(now: float | None = None) -> bool:
+    """Whether MapleLens may record the screen, asked at most once per ACCESS_CHECK_S."""
+    now = time.monotonic() if now is None else now
+    if not _access or now - _access["at"] >= ACCESS_CHECK_S:
+        _access.update(at=now, ok=bool(Quartz.CGPreflightScreenCaptureAccess()))
+    return bool(_access["ok"])
 
 
 def request_access() -> None:
