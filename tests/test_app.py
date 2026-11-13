@@ -1311,7 +1311,7 @@ def test_a_tick_with_the_game_shows_the_layer(hide, game_found):
 def test_a_tick_leaves_fullscreen_black_bars_out(hide, game_found, monkeypatch):
     box, layer, _, shown = hide
     frame = np.zeros((600, 800, 3), np.uint8)
-    frame[50:550] = 60  # the picture, between two 50-row bars
+    frame[75:525] = 60  # the 16:9 picture, between two 75-row bars
     monkeypatch.setattr(app.capture, "grab", lambda hwnd, r: frame)
     seen = []
     monkeypatch.setattr(
@@ -1319,8 +1319,8 @@ def test_a_tick_leaves_fullscreen_black_bars_out(hide, game_found, monkeypatch):
     )
     tick, exp = _tick(box, layer, shown)
     tick.run(5.0)
-    assert seen == [(500, 800, 3)]
-    assert exp.updates == [(READING, (0, 50, 800, 500), 5.0)]
+    assert seen == [(450, 800, 3)]
+    assert exp.updates == [(READING, (0, 75, 800, 450), 5.0)]
 
 
 def test_a_tick_without_an_answer_leaves_the_tools_alone(hide, game_found):
@@ -1636,3 +1636,21 @@ def test_self_check_fails_when_the_helper_never_answers(monkeypatch, no_cache):
     monkeypatch.setattr(app, "ProcessReader", Silent)
     monkeypatch.setattr(app, "HELPER_CHECK_S", 0.2)
     assert app.self_check() == 1
+
+
+def test_a_loading_screen_leaves_the_box_where_the_bars_put_it(hide, game_found, monkeypatch):
+    # fullscreen on a 16:10 Mac: bars above and below; a map change's black frame has none
+    box, layer, _, shown = hide
+    black = np.zeros((600, 800, 3), np.uint8)
+    barred = black.copy()
+    barred[75:525] = 60  # 800x450, 16:9
+    frames = [barred, black, barred]
+    monkeypatch.setattr(app.capture, "grab", lambda hwnd, r: frames.pop(0))
+    tick, _ = _tick(box, layer, shown)
+    tick.run(1.0)
+    at = box.pos()
+    tick.run(2.0)  # the loading screen
+    assert box.pos() == at
+    tick.reader = types.SimpleNamespace(ask=lambda job: None, take=lambda: None)
+    tick.run(3.0)  # an answer still on its way
+    assert box.pos() == at

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 import maplelens
 from maplelens import capture, update, update_mac
 from maplelens.overlay import ABOUT, MENU_MARK, Box, Layer
-from maplelens.reader import InlineReader, ProcessReader
+from maplelens.reader import InlineReader, ProcessReader, Rect
 from maplelens.readers import due, found, glyphs, ocr, quest_window
 from maplelens.store import data_dir, load_settings, save_settings
 from maplelens.tools.class_helper import data as class_data
@@ -775,6 +775,20 @@ class Tick:
     turn: int = 0  # ticks that tried to read a frame: whose turn it is (readers.due)
     seen_at: dict[str, int] = field(default_factory=dict)  # part -> turn it was last on screen
     reader: InlineReader | ProcessReader = field(default_factory=InlineReader)
+    bars: tuple[int, ...] | None = None  # (w, h, dx, dy, dw, dh): the last fullscreen bar cut
+
+    def picture(self, rect: Rect, cut: Rect | None = None) -> Rect:
+        """The game's picture in window `rect`: `cut`, an answer's, when it left out bars;
+        else the last cut for a window this size. A loading screen has no bars to see, so
+        without this the box would jump to the window's corner and back on a map change.
+        """
+        x, y, w, h = rect
+        if cut is not None and cut[2:] != rect[2:]:
+            self.bars = (w, h, cut[0] - x, cut[1] - y, *cut[2:])
+        if self.bars is None or self.bars[:2] != (w, h):
+            return rect
+        _, _, dx, dy, dw, dh = self.bars
+        return x + dx, y + dy, dw, dh
 
     def remember(self, got, turn: int) -> None:
         """Note which windows a reading answer saw, as of the turn of the job it answers."""
@@ -820,6 +834,7 @@ class Tick:
             got = e
         self.turn += 1  # bad ticks too: the turns keep going
         if got is None:  # no answer yet: follow the game, leave the tools alone
+            rect = self.picture(rect)
             self.layer.follow(rect)
             if self.shown.on:
                 self.layer.show()
@@ -828,8 +843,10 @@ class Tick:
         if isinstance(got, Exception):
             report_once(got, self.seen)
             reading = None
+            rect = self.picture(rect)
         else:
-            rect, reading = got  # the picture without any fullscreen black bars
+            cut, reading = got  # the picture without any fullscreen black bars
+            rect = self.picture(rect, cut)
         self.layer.follow(rect)
         if self.shown.on:  # hidden by the player: the tools still run, nothing shows
             self.layer.show()

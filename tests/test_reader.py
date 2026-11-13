@@ -106,14 +106,14 @@ def test_process_reader_answers_every_tick():
 
 def test_read_game_trims_the_black_bars(monkeypatch):
     frame = np.zeros((600, 800, 3), np.uint8)
-    frame[50:550] = 60
+    frame[75:525] = 60  # a 16:9 picture
     seen = []
     monkeypatch.setattr(reader.capture, "grab", lambda hwnd, r: frame)
     monkeypatch.setattr(
         reader, "read_all", lambda f, now, due=None: seen.append(f.shape) or READING
     )
-    assert reader.read_game(JOB) == ((0, 50, 800, 500), READING)
-    assert seen == [(500, 800, 3)]
+    assert reader.read_game(JOB) == ((0, 75, 800, 450), READING)
+    assert seen == [(450, 800, 3)]
 
 
 class _Conn:
