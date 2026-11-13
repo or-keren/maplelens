@@ -3,11 +3,30 @@ import sys
 import pytest
 
 from maplelens import overlay
-from maplelens.overlay import game_to_layer
+from maplelens.overlay import game_to_layer, game_to_qt
 
 
 def test_game_to_layer_125pct():
     assert game_to_layer(1250, 500, 1.25) == (1000.0, 400.0)
+
+
+# A 100% monitor and, right of it, a 1920x1080 one at 150% (1280x720 to Qt)
+SCREENS = [(0, 0, 2560, 1440, 1.0), (2560, 0, 1280, 720, 1.5)]
+
+
+def test_game_to_qt_maps_by_the_games_monitor():
+    """Not the box's: by the box's own, two monitors' scaling sent it back and forth."""
+    assert game_to_qt((100, 50, 1366, 768), SCREENS) == (100, 50, 1366, 768)
+    assert game_to_qt((2710, 150, 1920, 1080), SCREENS) == (2660, 100, 1280, 720)
+
+
+def test_game_to_qt_off_every_screen_uses_the_primary():
+    assert game_to_qt((-300, 0, 150, 150), [(0, 0, 1000, 800, 1.5), *SCREENS]) == (
+        -200,
+        0,
+        100,
+        100,
+    )
 
 
 def _box(monkeypatch):

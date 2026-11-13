@@ -234,6 +234,37 @@ def game_to_layer(px: float, py: float, dpr: float) -> tuple[float, float]:
     return px / dpr, py / dpr
 
 
+Screen = tuple[int, int, int, int, float]  # Qt geometry (x, y, w, h) and its pixel ratio
+
+
+def game_to_qt(
+    rect: tuple[int, int, int, int], screens: list[Screen]
+) -> tuple[float, float, float, float]:
+    """The game's client `rect` in physical pixels -> Qt's global logical coordinates.
+
+    Qt keeps each screen's top-left as is and scales only within the screen, so a point
+    maps by the ratio of the screen it's on: the game's, never the box's. Read from the
+    box's own screen, a box between two monitors of different scaling was sent to the
+    other one each tick and back the next. `screens[0]` (the primary) holds a point on none.
+    """
+    left, top, w, h = rect
+    sx, sy, _, _, d = next(
+        (
+            s
+            for s in screens
+            if s[0] <= left < s[0] + s[2] * s[4] and s[1] <= top < s[1] + s[3] * s[4]
+        ),
+        screens[0],
+    )
+    return sx + (left - sx) / d, sy + (top - sy) / d, w / d, h / d
+
+
+def _screens() -> list[Screen]:
+    primary = QGuiApplication.primaryScreen()
+    ordered = [primary, *(s for s in QGuiApplication.screens() if s is not primary)]
+    return [(*s.geometry().getRect(), s.devicePixelRatio()) for s in ordered]
+
+
 def native_setup(widget: QWidget) -> None:
     """Platform setup for one of MapleLens's own windows, run each time it's shown.
 
@@ -259,11 +290,8 @@ class Layer(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
 
     def follow(self, rect: tuple[int, int, int, int]) -> None:
-        left, top, w, h = rect  # physical pixels
-        dpr = self.devicePixelRatioF()
-        x, y = game_to_layer(left, top, dpr)
-        pw, ph = game_to_layer(w, h, dpr)
-        self.setGeometry(round(x), round(y), round(pw), round(ph))
+        x, y, w, h = game_to_qt(rect, _screens())
+        self.setGeometry(round(x), round(y), round(w), round(h))
 
     def showEvent(self, event):
         native_setup(self)
@@ -643,11 +671,9 @@ class Box(QWidget):
     def place(self, game_rect: tuple[int, int, int, int]) -> None:
         if self._drag_from is not None or self._grip.dragging:
             return  # don't fight the user's drag
-        left, top, w, _ = game_rect  # physical pixels
-        dpr = self.devicePixelRatioF()
-        x, y = game_to_layer(left, top, dpr)
+        x, y, w, _ = game_to_qt(game_rect, _screens())
         self._origin = QPoint(round(x), round(y))
-        self._game_w = round(w / dpr)
+        self._game_w = round(w)
         saved = self._settings.get("boxes", {}).get(self._name)
         if saved:
             target = self._origin + QPoint(*saved)

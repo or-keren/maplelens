@@ -36,6 +36,12 @@ def test_client_rect_scale_1():
     assert capture_mac.client_rect_from(b, True, 28, 1) == (1512, 28, 1366, 768)
 
 
+def test_client_rect_retina_beside_the_main_screen():
+    """Pixels as Qt counts them: the screen's top-left as is, scaled only from there."""
+    b = {**BOUNDS, "X": 1600, "Y": 100}
+    assert capture_mac.client_rect_from(b, True, 28, 2, (1512, 0)) == (1688, 256, 2732, 1536)
+
+
 def test_client_rect_no_title_bar():
     assert capture_mac.client_rect_from(BOUNDS, True, 0, 2) == (0, 0, 2732, 1592)
 
