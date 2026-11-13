@@ -4,12 +4,30 @@ An open-source overlay for **MapleStory Classic** that keeps you in the game.
 Instead of alt-tabbing to price sites, class guides and route finders, MapleLens
 reads what's on your screen and shows what you need on top of the game window.
 
-> **Status: Phase 2: path arrow.** The EXP meter (EXP/min, time to level, History window)
-> is built, and so is the path arrow: pick a destination on the Path tab and an arrow over
-> your character points the way, map by map.
->
-> Map and portal data adapted from [meowdb](https://meowdb.com/msclassic).
-> Minimap pictures and portal types from [OSMS Data Explorer](https://osmsdataexplorer.com).
+![MapleLens over MapleStory Classic in the Kerning City subway: the Path tab lists a 12-map route to Sleepywood, and a yellow arrow over the character points to the next portal](docs/screenshots/hero.jpg)
+
+## What it does
+
+**Path arrow** (above): pick a map, and the Path tab lists the route there while an arrow
+over your character points to the next portal.
+
+**EXP meter:** your EXP per hour and time to level, live. History keeps the average for
+every map you've trained on.
+
+![The EXP tab showing 21,433 EXP an hour and level up in 3h 49m, over the History window: the best maps for a level 29 Rogue, with Transfer Area at 49,198 EXP an hour, then the average EXP per hour for each map, class and level](docs/screenshots/exp.jpg)
+
+**Class helper:** where to train for your class and level, with your best spot first and
+one click to set a route there, plus what comes next: job advancement, gear and stats.
+
+![The Class tab for a level 29 Rogue with 5 AP and 3 SP: three training spots with Transfer Area marked as the best at 879 EXP a minute, then the level 30 advancement and gear. Over the game's stat window a ring on LUK's + button says 5 here, and over the skill window a ring on Dark Sight's says 3 here](docs/screenshots/class.jpg)
+
+**Quest helper:** open a quest in the game and the Quests tab shows where to go for each
+NPC, monster and item it needs, one click to set a route there. Track quests to keep them.
+Quests you follow in the game's Quest Helper are tracked by themselves, and their targets
+drop off as you finish them. Each quest switches between Closest (the nearest map) and Best
+(the most monsters); quick quests start on Closest.
+
+![The Quests tab next to the game's quest window: The Filing Error's Torn Ledger Pages row is outlined with Going · 5 maps away and a Stop button, the Path tab shows its running dot, and a yellow arrow by the character points the way](docs/screenshots/quests.jpg)
 
 ## The promise: screen-reading only
 
@@ -28,7 +46,7 @@ is what matters, and pull requests that break it are not accepted.
 
 - Windows 10/11, or macOS with MapleStory Classic from Nexon's Mac launcher
 - The game running **windowed or borderless** (windowed only on the Mac). True fullscreen hides overlay windows.
-- On the Mac, the first run asks for Screen Recording for the app you start MapleLens from (Terminal, say).
+- On the Mac, MapleLens needs Screen Recording. Running from source, that is the app you start it from (Terminal, say).
 
 ## Download (Windows)
 
@@ -64,12 +82,52 @@ MapleLens sends one HTTPS request to GitHub's API for the latest release. The re
 carries `MapleLens/<version>` as its User-Agent and nothing about you or the game; the
 update itself is downloaded from GitHub too. To turn the check off, click **•••** on the box
 and untick **Check for updates automatically**. **Check for updates now** still works
-when you want it. Only the installed Windows app checks; running from source never does.
+when you want it. Only the installed app checks (Windows or Mac); running from source
+never does.
 
 **Uninstalling:** Settings → Apps → MapleLens. Your settings and history stay in
 `%APPDATA%\MapleLens`; delete that folder to remove them too. If something goes wrong,
 attach `%APPDATA%\MapleLens\maplelens.log` (MapleLens writes its errors there) to a bug
 report.
+
+## Download (Mac)
+
+Apple silicon (M1 or newer) or Intel, on macOS 14.4 or newer.
+
+1. Open the [latest release](https://github.com/or-keren/maplelens/releases/latest) and
+   download your Mac's dmg under **Assets**: `MapleLens-X.Y.Z.dmg` for Apple silicon,
+   `MapleLens-X.Y.Z-intel.dmg` for Intel. Not sure which you have? Apple menu → **About
+   This Mac**: "Chip … Apple M…" is Apple silicon, "Processor … Intel" is Intel.
+2. Open the dmg and drag **MapleLens** onto **Applications**.
+3. Open MapleLens from Applications. It isn't notarized by Apple, so macOS refuses the
+   first time. Open **System Settings → Privacy & Security**, scroll down and click
+   **Open Anyway** next to MapleLens, then confirm. You only do this once.
+4. MapleLens needs Screen Recording to see the game. If the box says "Allow, then
+   reopen: click •••", click **•••** on the box, choose **Open Screen Recording
+   settings…** and tick MapleLens. Then quit MapleLens (click its maple leaf in the
+   menu bar at the top of the screen and choose **Quit MapleLens**) and open it from
+   Applications again: macOS doesn't give a running app the permission, and it doesn't
+   offer to restart it. If MapleLens is already switched on there but the box keeps
+   asking (an older copy's permission), quit MapleLens, run
+   `tccutil reset ScreenCapture io.github.or-keren.maplelens` in Terminal, then open
+   MapleLens and allow it again.
+5. Start MapleStory Classic **windowed** (the Mac launcher's fullscreen hides overlays),
+   then use the box as on Windows. If it says "Looking for MapleStory…", click **•••** on
+   the box and choose **Pick game window…**. MapleLens has no Dock icon: its maple leaf
+   in the menu bar opens the same menu, and **Hide MapleLens** / **Show MapleLens** there
+   hides the box and the arrow and brings them back.
+
+**Updating:** same as Windows: click **•••** on the box and choose **Update to X.Y.Z…**.
+MapleLens downloads the new dmg, checks its SHA-256 checksum, and swaps itself in. You
+keep Screen Recording and don't see Open Anyway again. If the box says "Move to
+Applications to update", drag MapleLens into Applications and open it from there. Rarely,
+macOS blocks the swap and the box says "Allow updates: click •••"; then click **•••**,
+choose **Allow MapleLens to update…** and accept the macOS prompt.
+
+**Removing:** drag MapleLens from Applications to the Trash. Your settings and history stay
+in `~/Library/Application Support/MapleLens`; delete that folder to remove them too. If
+something goes wrong, attach `~/Library/Application Support/MapleLens/maplelens.log` to a
+bug report.
 
 ## Roadmap
 
@@ -96,6 +154,37 @@ click **•••** on the box and use **Pick game window…**. The choice is sa
 
 Run the tests with `uv run pytest`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 checks, the workflow and how releases are made.
+
+## Status
+
+> **Status: Phase 3: class helper (in progress).** Four tools are built: the EXP meter
+> (EXP/min, time to level, History window), the path arrow (points you to the next portal on
+> your route), the class helper (a Class tab with gear, training maps, AP and SP plans for
+> every 1st and 2nd job, plus marks on the game's stat and skill windows) and the quest
+> helper (a Quests tab that tracks quests, showing where to go for each NPC, monster and
+> item they need, follows the game's Quest Helper, and takes over while a quest window is
+> open in the game).
+>
+> Map and portal data adapted from [meowdb](https://meowdb.com/msclassic).
+> Minimap pictures and portal types from [OSMS Data Explorer](https://osmsdataexplorer.com).
+> Quest data adapted from [meowdb](https://meowdb.com/msclassic) (NiaDB) and [OSMS Data Explorer](https://osmsdataexplorer.com) (CC BY 4.0).
+>
+> Class plans adapted from the NiaDB class guides:
+>   [beginners-guide-first-steps-in-maple-world](https://meowdb.com/msclassic/guides/beginners-guide-first-steps-in-maple-world) ·
+>   [warrior-class-guide](https://meowdb.com/msclassic/guides/warrior-class-guide) ·
+>   [magician-class-guide](https://meowdb.com/msclassic/guides/magician-class-guide) ·
+>   [bowman-class-guide](https://meowdb.com/msclassic/guides/bowman-class-guide) ·
+>   [thief-class-guide](https://meowdb.com/msclassic/guides/thief-class-guide) ·
+>   [fighter-class-guide](https://meowdb.com/msclassic/guides/fighter-class-guide) ·
+>   [page-class-guide](https://meowdb.com/msclassic/guides/page-class-guide) ·
+>   [spearman-class-guide](https://meowdb.com/msclassic/guides/spearman-class-guide) ·
+>   [fp-wizard-class-guide](https://meowdb.com/msclassic/guides/fp-wizard-class-guide) ·
+>   [il-wizard-class-guide](https://meowdb.com/msclassic/guides/il-wizard-class-guide) ·
+>   [cleric-class-guide](https://meowdb.com/msclassic/guides/cleric-class-guide) ·
+>   [hunter-class-guide](https://meowdb.com/msclassic/guides/hunter-class-guide) ·
+>   [crossbowman-class-guide](https://meowdb.com/msclassic/guides/crossbowman-class-guide) ·
+>   [assassin-class-guide](https://meowdb.com/msclassic/guides/assassin-class-guide) ·
+>   [bandit-class-guide](https://meowdb.com/msclassic/guides/bandit-class-guide)
 
 ## Disclaimer
 

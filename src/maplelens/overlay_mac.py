@@ -25,7 +25,10 @@ def make_panel(widget: QWidget) -> None:
 
 
 def make_accessory() -> None:
-    """No Dock icon or menu bar: the game stays the frontmost app."""
+    """No Dock icon or app menu, also for a plain python process (run from source).
+
+    Only the policy: it never brings MapleLens or any other app to the front.
+    """
     NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
 

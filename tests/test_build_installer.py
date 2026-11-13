@@ -1,12 +1,12 @@
+import ast
 import importlib.util
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-
-# The build makes the Windows installer and ships the licenses of win32-only packages (winrt).
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="the build is Windows-only")
 
 ROOT = Path(__file__).parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -21,6 +21,16 @@ def bundle_ok(monkeypatch, tmp_path):
     monkeypatch.setattr(build_installer, "check_bundle", lambda src, bundle: None)
     monkeypatch.setattr(build_installer, "VERSION_FILE", tmp_path / "version_info.txt")
     monkeypatch.setattr(build_installer, "LICENSES", tmp_path / "licenses")
+    monkeypatch.setattr(build_installer, "LICENSE_SOURCES", {})  # winrt's exists on Windows only
+
+
+@pytest.fixture
+def mac_bundle_ok(monkeypatch, tmp_path):
+    monkeypatch.setattr(build_installer, "check_bundle", lambda *args: None)
+    monkeypatch.setattr(build_installer, "MAC_LICENSES", tmp_path)
+    mine = build_installer.MAC_LICENSE_SOURCES["MapleLens-LICENSE.txt"]
+    monkeypatch.setattr(build_installer, "MAC_LICENSE_SOURCES", {"MapleLens-LICENSE.txt": mine})
+    return tmp_path
 
 
 def _record(calls):
@@ -30,7 +40,7 @@ def _record(calls):
 
 def test_freeze_only_runs_pyinstaller_then_the_self_check(bundle_ok):
     calls = []
-    assert build_installer.main(["--freeze-only"], run=_record(calls)) == 0
+    assert build_installer.main(["--freeze-only"], run=_record(calls), platform="win32") == 0
     cmd, check = calls
     assert check == [str(ROOT / "dist" / "MapleLens" / "MapleLens.exe"), "--self-check"]
     assert cmd[1:3] == ["-m", "PyInstaller"]
@@ -47,7 +57,7 @@ def test_full_build_freezes_checks_then_runs_inno_setup(bundle_ok, monkeypatch, 
     iscc = tmp_path / "ISCC.exe"
     monkeypatch.setattr(build_installer, "find_iscc", lambda: iscc)
     calls = []
-    assert build_installer.main([], run=_record(calls)) == 0
+    assert build_installer.main([], run=_record(calls), platform="win32") == 0
     _, check, setup = calls
     assert check[-1] == "--self-check"
     version = build_installer.read_version(ROOT / "pyproject.toml")
@@ -64,7 +74,7 @@ def test_full_build_needs_inno_setup_before_freezing(bundle_ok, monkeypatch):
     monkeypatch.setattr(build_installer.shutil, "which", lambda name: None)
     calls = []
     with pytest.raises(SystemExit, match="Inno Setup"):
-        build_installer.main([], run=_record(calls))
+        build_installer.main([], run=_record(calls), platform="win32")
     assert calls == []
 
 
@@ -103,7 +113,7 @@ def test_failed_self_check_fails_the_build(bundle_ok):
             raise build_installer.subprocess.CalledProcessError(1, cmd)
 
     with pytest.raises(SystemExit, match="self-check"):
-        build_installer.main(["--freeze-only"], run=run)
+        build_installer.main(["--freeze-only"], run=run, platform="win32")
 
 
 def test_a_hung_self_check_fails_the_build(bundle_ok):
@@ -116,7 +126,7 @@ def test_a_hung_self_check_fails_the_build(bundle_ok):
             raise build_installer.subprocess.TimeoutExpired(cmd, timeout)
 
     with pytest.raises(SystemExit, match="took over"):
-        build_installer.main(["--freeze-only"], run=run)
+        build_installer.main(["--freeze-only"], run=run, platform="win32")
     assert timeouts == [None, build_installer.SELF_CHECK_S]  # the freeze takes its time
 
 
@@ -190,7 +200,7 @@ def test_freeze_writes_the_version_file_first_and_licenses_before_the_check(bund
             )
         )
 
-    build_installer.main(["--freeze-only"], run=run)
+    build_installer.main(["--freeze-only"], run=run, platform="win32")
     (_, version_before_freeze, _), (check, _, licenses_before_check) = seen
     assert version_before_freeze
     assert check == "--self-check"
@@ -199,6 +209,7 @@ def test_freeze_writes_the_version_file_first_and_licenses_before_the_check(bund
     assert f"'{version}'" in build_installer.VERSION_FILE.read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="winrt is installed on Windows only")
 def test_copy_licenses_ships_every_license(tmp_path):
     build_installer.copy_licenses(tmp_path)
     names = {p.name for p in tmp_path.iterdir()}
@@ -239,3 +250,149 @@ def test_setup_says_where_to_quit_a_running_maplelens():
     assert "Quit it from the ' + #$2022#$2022#$2022 +" in iss
     assert "' menu on its box or its tray icon, then try again.'" in iss
     assert "right-click" not in iss
+
+
+def test_mac_freeze_only_freezes_licenses_signs_adhoc_then_self_checks(mac_bundle_ok):
+    calls = []
+    assert build_installer.main(["--freeze-only"], run=_record(calls), platform="darwin") == 0
+    freeze, sign, check = calls
+    assert str(build_installer.MAC_SPEC) in freeze
+    assert sign == build_installer.sign_cmd(build_installer.MAC_APP, "-")
+    assert check == [str(build_installer.MAC_EXE), "--self-check"]
+    assert (mac_bundle_ok / "MapleLens-LICENSE.txt").is_file()  # copied before signing
+
+
+def test_check_bundle_needs_the_qt_cocoa_plugin(tmp_path):
+    src, bundle, app = tmp_path / "src", tmp_path / "bundle", tmp_path / "app"
+    req = build_installer.MAC_REQUIRED
+    _pngs(app, req)
+    build_installer.check_bundle(src, bundle, app, req)
+    (app / req[0]).unlink()
+    with pytest.raises(SystemExit, match=r"libqcocoa\.dylib"):
+        build_installer.check_bundle(src, bundle, app, req)
+
+
+def test_the_mac_bundle_needs_the_packaged_icon():
+    assert "Contents/Resources/maplelens/data/icon.ico" in build_installer.MAC_REQUIRED
+
+
+def test_mac_licenses_ship_pyobjc_not_winrt():
+    assert "pyobjc-LICENSE.txt" in build_installer.MAC_LICENSE_SOURCES
+    assert "winrt-LICENSE.txt" not in build_installer.MAC_LICENSE_SOURCES
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="pyobjc is installed on the Mac only")
+def test_copy_licenses_ships_the_mac_set(tmp_path):
+    build_installer.copy_licenses(tmp_path, build_installer.MAC_LICENSE_SOURCES)
+    assert {p.name for p in tmp_path.iterdir()} == set(build_installer.MAC_LICENSE_SOURCES)
+    assert all(p.stat().st_size > 0 for p in tmp_path.iterdir())
+
+
+def test_mac_spec_and_icon_exist():
+    assert build_installer.MAC_SPEC.is_file()
+    assert (ROOT / "packaging" / "mac" / "icon.icns").is_file()
+
+
+def test_mac_spec_pins_the_bundle_id_and_stays_out_of_the_dock():
+    text = build_installer.MAC_SPEC.read_text()
+    assert "io.github.or-keren.maplelens" in text
+    assert '"LSUIElement": True' in text  # in the menu bar, not the Dock
+
+
+def test_mac_full_build_freezes_signs_verifies_self_checks_and_makes_the_dmg(
+    mac_bundle_ok, monkeypatch
+):
+    monkeypatch.setenv("MAPLELENS_SIGN_IDENTITY", "MapleLens Release")
+    made = []
+    monkeypatch.setattr(build_installer, "make_dmg", lambda app, dmg, run: made.append(dmg))
+    calls = []
+    assert build_installer.main([], run=_record(calls), platform="darwin") == 0
+    app, exe = build_installer.MAC_APP, str(build_installer.MAC_EXE)
+    assert calls[1:] == [
+        build_installer.sign_cmd(app, "-"),
+        [exe, "--self-check"],
+        build_installer.sign_cmd(app, "MapleLens Release"),
+        build_installer.verify_cmd(app),
+        [exe, "--self-check"],
+    ]
+    assert made == [build_installer.dmg_path(build_installer.read_version())]
+
+
+def test_sign_only_without_identity_signs_adhoc_and_says_so(monkeypatch, capsys):
+    monkeypatch.delenv("MAPLELENS_SIGN_IDENTITY", raising=False)
+    calls = []
+    assert build_installer.main(["--sign-only"], run=_record(calls), platform="darwin") == 0
+    app = build_installer.MAC_APP
+    assert calls == [build_installer.sign_cmd(app, "-"), build_installer.verify_cmd(app)]
+    assert "signing ad-hoc" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("machine", ["arm64", "x86_64"])
+def test_the_dmg_is_named_as_the_update_check_looks_for_it(machine):
+    from maplelens import update
+
+    dmg = build_installer.dmg_path("1.2.3", machine)
+    assert dmg.name == update.asset_name("1.2.3", "darwin", machine)
+
+
+def test_dmg_only_self_checks_then_makes_the_dmg(monkeypatch):
+    made = []
+    monkeypatch.setattr(build_installer, "make_dmg", lambda app, dmg, run: made.append(app))
+    calls = []
+    assert build_installer.main(["--dmg-only"], run=_record(calls), platform="darwin") == 0
+    assert calls == [[str(build_installer.MAC_EXE), "--self-check"]]
+    assert made == [build_installer.MAC_APP]
+
+
+def test_new_flags_are_mac_only_and_exclusive():
+    for flag in ("--sign-only", "--dmg-only"):
+        with pytest.raises(SystemExit):
+            build_installer.main([flag], run=_record([]), platform="win32")
+    with pytest.raises(SystemExit):
+        build_installer.main(["--sign-only", "--dmg-only"], run=_record([]), platform="darwin")
+
+
+def test_build_script_imports_only_the_standard_library_at_top_level():
+    tree = ast.parse((ROOT / "scripts" / "build_installer.py").read_text())
+    names = {a.name.split(".")[0] for n in tree.body if isinstance(n, ast.Import) for a in n.names}
+    names |= {n.module.split(".")[0] for n in tree.body if isinstance(n, ast.ImportFrom)}
+    assert names <= sys.stdlib_module_names | {"__future__"}
+
+
+def _fake_app(root):
+    app = root / "MapleLens.app"
+    (app / "Contents").mkdir(parents=True)
+    (app / "Contents" / "Info.plist").write_text("x")
+    return app
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS tools")
+def test_dmg_stage_has_the_app_and_an_applications_link(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_installer, "DIST", tmp_path / "dist")
+    app, dmg, calls = _fake_app(tmp_path), tmp_path / "out.dmg", []
+    stage = tmp_path / "dist" / "dmg"
+    stage.mkdir(parents=True)
+    (stage / "stale").write_text("x")
+
+    def run(cmd, timeout=None):
+        calls.append(cmd)
+        if cmd[0] == "ditto":  # the fake ditto copies like the real one
+            build_installer.shutil.copytree(cmd[1], cmd[2], symlinks=True)
+
+    build_installer.make_dmg(app, dmg, run)
+    assert calls[0] == ["ditto", str(app), str(stage / "MapleLens.app")]
+    assert (stage / "MapleLens.app" / "Contents" / "Info.plist").is_file()
+    assert os.readlink(stage / "Applications") == "/Applications"
+    assert not (stage / "stale").exists()
+    assert calls[-1] == [
+        "hdiutil", "create", "-volname", "MapleLens", "-srcfolder", str(stage),
+        "-fs", "HFS+", "-format", "UDZO", "-ov", str(dmg),
+    ]  # fmt: skip
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS tools")
+def test_make_dmg_really_builds_a_dmg(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_installer, "DIST", tmp_path / "dist")
+    dmg = tmp_path / "out.dmg"
+    build_installer.make_dmg(_fake_app(tmp_path), dmg)
+    subprocess.run(["hdiutil", "imageinfo", str(dmg)], check=True, capture_output=True)

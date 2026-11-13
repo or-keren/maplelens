@@ -179,3 +179,11 @@ def grab(hwnd: int, rect: tuple[int, int, int, int]) -> np.ndarray:
 
 def ensure_access() -> bool:
     return True
+
+
+def has_access() -> bool:
+    return True
+
+
+def request_access() -> None:
+    pass  # Windows asks for nothing

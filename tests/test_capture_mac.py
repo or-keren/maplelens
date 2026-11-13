@@ -101,3 +101,24 @@ def test_crop_bgr_keeps_top_without_doubling():
     rgb[40:60] = 0  # flat rows are equal in both phases
     out = capture_mac.crop_bgr(rgb, (0, 0, 60, 80))
     assert np.array_equal(out, rgb[10:, :, ::-1])
+
+
+def test_has_access_and_request_access_wrap_quartz(monkeypatch):
+    calls = []
+    monkeypatch.setattr(capture_mac, "_access", {})
+    monkeypatch.setattr(Quartz, "CGPreflightScreenCaptureAccess", lambda: True)
+    monkeypatch.setattr(Quartz, "CGRequestScreenCaptureAccess", lambda: calls.append(1))
+    assert capture_mac.has_access() is True
+    capture_mac.request_access()
+    assert calls == [1]
+
+
+def test_has_access_asks_macos_at_most_every_10_s(monkeypatch):
+    # asked on every tick, it jammed the service every capture goes through
+    asked = []
+    monkeypatch.setattr(capture_mac, "_access", {})
+    monkeypatch.setattr(Quartz, "CGPreflightScreenCaptureAccess", lambda: asked.append(1) or False)
+    assert [capture_mac.has_access(t) for t in (0, 0.5, 9.9)] == [False] * 3
+    assert len(asked) == 1
+    capture_mac.has_access(10)
+    assert len(asked) == 2

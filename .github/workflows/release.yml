@@ -1,4 +1,5 @@
-# Publishes MapleLens-Setup-X.Y.Z.exe when main holds a version that has no vX.Y.Z tag yet.
+# Publishes MapleLens-Setup-X.Y.Z.exe, MapleLens-X.Y.Z.dmg (Apple silicon) and
+# MapleLens-X.Y.Z-intel.dmg when main holds a version that has no vX.Y.Z tag yet.
 # Merging the PR from prepare-release.yml is the usual way that happens. A failure in any
 # step before the last one creates no tag and no release.
 # Every installed MapleLens runs what this publishes, so the job that runs the checks and
@@ -60,7 +61,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - name: Inno Setup 6
@@ -82,8 +83,133 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  mac-build:
+    needs: version
+    if: needs.version.outputs.released == 'false'
+    strategy:
+      matrix:
+        # one dmg per CPU, each built and signed on its own kind of Mac: numpy and OpenCV
+        # ship no universal2 wheels. macos-15-intel is GitHub's last Intel image.
+        include:
+          - runner: macos-latest
+            arch: arm64
+            dmg: ""
+          - runner: macos-15-intel
+            arch: x86_64
+            dmg: -intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --group build
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run python scripts/check_screen_only.py
+      - run: uv run pytest
+      - run: uv run --group build python scripts/build_installer.py --freeze-only
+      # ditto keeps symlinks and permissions, which upload-artifact's zip doesn't
+      - run: ditto -c -k --keepParent dist/MapleLens.app dist/MapleLens-app.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mac-app-${{ matrix.arch }}
+          path: dist/MapleLens-app.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job that sees the certificate. It runs no package manager and none of the app's
+  # code while the key exists: the keychain is deleted before --dmg-only's self-check starts
+  # the app. Needs Python 3.11+ from the runner (build_installer.py reads pyproject with tomllib).
+  mac-sign:
+    needs: [version, mac-build]
+    strategy:
+      matrix:
+        # the same two Macs as mac-build: each signs and wraps the app it built
+        include:
+          - runner: macos-latest
+            arch: arm64
+            dmg: ""
+          - runner: macos-15-intel
+            arch: x86_64
+            dmg: -intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the certificate secrets are set
+        env:
+          P12_BASE64: ${{ secrets.MAC_SIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::MAC_SIGN_P12_BASE64 and MAC_SIGN_P12_PASSWORD must both be set as repository secrets"
+            exit 1
+          fi
+      - name: Check python3 is 3.11 or newer
+        run: |
+          python3 -c 'import sys; sys.exit(not sys.version_info >= (3, 11))' || {
+            echo "::error::the runner's python3 is $(python3 -V 2>&1), scripts/build_installer.py needs 3.11+"
+            exit 1
+          }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mac-app-${{ matrix.arch }}
+          path: mac-app
+      - run: ditto -x -k mac-app/MapleLens-app.zip dist
+      - name: Import the certificate into a temporary keychain
+        env:
+          P12_BASE64: ${{ secrets.MAC_SIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+        # codesign only takes an identity that is trusted for code signing and sits in a
+        # keychain on the search list. The runner is thrown away, so both changes are fine.
+        run: |
+          keychain="$RUNNER_TEMP/maplelens-sign.keychain-db"
+          p12="$RUNNER_TEMP/sign.p12"
+          pem="$RUNNER_TEMP/sign.pem"
+          kcpass=$(head -c 16 /dev/urandom | xxd -p)
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$kcpass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kcpass" "$keychain"
+          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-certificate -c "MapleLens Release" -p "$keychain" > "$pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k "$keychain" "$pem"
+          rm -f "$p12" "$pem"
+      - run: python3 scripts/build_installer.py --sign-only
+        env:
+          MAPLELENS_SIGN_IDENTITY: MapleLens Release
+      - name: Delete the keychain
+        if: always()
+        # deleting it also takes it off the search list
+        # (also removes the decoded key files if the import step died half way)
+        run: |
+          k="$RUNNER_TEMP/maplelens-sign.keychain-db"
+          rm -f "$RUNNER_TEMP/sign.p12" "$RUNNER_TEMP/sign.pem"
+          [ ! -e "$k" ] || security delete-keychain "$k"
+      - run: python3 scripts/build_installer.py --dmg-only
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mac-dmg-${{ matrix.arch }}
+          path: dist/MapleLens-${{ env.VERSION }}${{ matrix.dmg }}.dmg
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
-    needs: [version, build]
+    needs: [version, build, mac-sign]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -94,12 +220,18 @@ jobs:
         with:
           name: setup
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mac-dmg-*
+          merge-multiple: true
+          path: dist
       - name: Tag and publish
         env:
           GH_TOKEN: ${{ github.token }}
-        # gh uploads the exe to a draft and publishes it (creating the tag) only after
+        # gh uploads the exe and dmgs to a draft and publishes it (creating the tag) only after
         # the upload succeeds, so a failed upload leaves no tag
         run: >-
-          gh release create "v$VERSION" "dist/MapleLens-Setup-$VERSION.exe"
+          gh release create "v$VERSION" "dist/MapleLens-Setup-$VERSION.exe" "dist/MapleLens-$VERSION.dmg"
+          "dist/MapleLens-$VERSION-intel.dmg"
           --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
           --title "MapleLens $VERSION" --generate-notes

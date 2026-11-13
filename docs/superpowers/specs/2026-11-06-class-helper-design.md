@@ -47,8 +47,9 @@ Two surfaces:
   the default until the player picks.
 - **SP in Classic** (owner): each job tab has its own SP pool; 3 SP per level. The owner
   believes leftover 1st-job SP can still be spent on the 1st-job tab after the 2nd job
-  advance; the builder confirms this in game with the owner, along with whether a job
-  advance itself grants SP, before the SP maths is written.
+  advance. **Confirmed 2026-11-07** (owner, in game): the skill window shows a separate
+  SP count on each job tab. The SP maths doesn't depend on the other questions (leftover
+  SP, SP for the advance itself): it works from what each tab shows, spent plus unspent.
 
 ## Goals
 

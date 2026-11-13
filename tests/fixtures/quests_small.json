@@ -1,0 +1,4 @@
+{"quests":[{"id":1001,"name":"Bringing a Mirror to Heena","giver":2,"taker":1,"mobs":[[2,3]],"items":[[4000001,10],[4031000,1]],"start_items":[4031000]}],
+ "npcs":{"1":{"name":"Heena","places":[["000000001",-46,280]]},"2":{"name":"Sera","places":[["000000001",833,125]]}},
+ "mobs":{"2":{"name":"Snail","spawns":{"000000040":6}}},
+ "items":{"4000001":{"name":"Snail Shell","drops":[2],"shops":[]},"4031000":{"name":"Sera's Mirror","drops":[],"shops":[1]}}}

@@ -41,8 +41,8 @@ def plan(maps: dict[str, MapInfo], start: str, goal: str, taxi: bool) -> list[St
 
 
 class Trip:
-    def __init__(self, maps: dict[str, MapInfo], start: str, goal: str, taxi: bool):
-        self.maps, self.goal, self.taxi = maps, goal, taxi
+    def __init__(self, maps: dict[str, MapInfo], start: str, goal: str, taxi: bool, at=None):
+        self.maps, self.goal, self.taxi, self.at = maps, goal, taxi, at  # at: NPC world spot
         self.steps = plan(maps, start, goal, taxi)
         self.index = 0
 
@@ -61,8 +61,10 @@ class Trip:
         return self.steps is not None and self.steps[self.index].map_id == self.goal
 
     def target(self, player: tuple[float, float]) -> tuple[int, int] | None:
-        if self.steps is None or self.arrived:
+        if self.steps is None:
             return None
+        if self.arrived:
+            return self.at
         here = self.maps[self.steps[self.index].map_id]
         if self.steps[self.index].cab:
             return (here.cab.x, here.cab.y)

@@ -129,3 +129,116 @@ def test_a_failed_tag_lookup_fails_rather_than_rebuilding():
     text = _job(_release(), "version")
     assert '"$code" -eq 2' in text
     assert "exit 1" in text
+
+
+def _steps(job: str) -> list[str]:
+    """The steps of a job, each as its text."""
+    return re.split(r"^      - ", job.split("    steps:\n", 1)[1], flags=re.M)[1:]
+
+
+def _step_index(steps: list[str], needle: str) -> int:
+    return next(i for i, s in enumerate(steps) if needle in s)
+
+
+def _builds_on_both_macs(job: str) -> None:
+    """Apple silicon and Intel, each with the dmg name maplelens.update looks for."""
+    assert "runs-on: ${{ matrix.runner }}" in job
+    assert re.search(r"- runner: macos-latest\n\s+arch: arm64\n\s+dmg: \"\"\n", job)
+    assert re.search(r"- runner: macos-15-intel\n\s+arch: x86_64\n\s+dmg: -intel\n", job)
+
+
+def test_mac_build_can_only_read_and_sees_no_secrets():
+    job = _job(_release(), "mac-build")
+    _builds_on_both_macs(job)
+    assert "contents: read" in job
+    assert "contents: write" not in job
+    assert "secrets." not in job
+    assert job.count("persist-credentials: false") == 1
+    assert "--freeze-only" in job
+    assert "ditto -c -k --keepParent dist/MapleLens.app" in job
+    assert "name: mac-app-${{ matrix.arch }}" in job
+
+
+def test_only_mac_sign_sees_the_certificate():
+    text = _release()
+    for name in ["version", "build", "mac-build", "publish"]:
+        assert "secrets." not in _job(text, name), name
+    sign = _job(text, "mac-sign")
+    assert "secrets.MAC_SIGN_P12_BASE64" in sign
+    assert "secrets.MAC_SIGN_P12_PASSWORD" in sign
+    assert "contents: write" not in sign
+    assert "persist-credentials: false" in sign
+
+
+def test_mac_sign_signs_on_the_mac_that_built_the_app():
+    sign = _job(_release(), "mac-sign")
+    _builds_on_both_macs(sign)
+    assert "name: mac-app-${{ matrix.arch }}" in sign
+    assert "path: dist/MapleLens-${{ env.VERSION }}${{ matrix.dmg }}.dmg" in sign
+
+
+def test_mac_sign_installs_no_packages():
+    sign = _job(_release(), "mac-sign")
+    assert "setup-uv" not in sign
+    assert not re.search(r"\buv\b|\bpip\b|brew install", sign)
+    assert "python3 scripts/build_installer.py --sign-only" in sign
+    assert "sys.version_info >= (3, 11)" in sign  # fails clearly on an old python3
+
+
+def test_mac_sign_deletes_the_keychain_before_running_the_app():
+    steps = _steps(_job(_release(), "mac-sign"))
+    delete = steps[_step_index(steps, "security delete-keychain")]
+    assert re.search(r"^\s+if: always\(\)", delete, re.M)
+    sign = _step_index(steps, "--sign-only")
+    assert sign < _step_index(steps, "security delete-keychain") < _step_index(steps, "--dmg-only")
+    assert "MAPLELENS_SIGN_IDENTITY: MapleLens Release" in steps[sign]
+    assert "name: mac-dmg-${{ matrix.arch }}" in steps[-1]
+
+
+def test_mac_sign_makes_the_identity_usable_and_cleans_up_the_key_files():
+    steps = _steps(_job(_release(), "mac-sign"))
+    imp = steps[_step_index(steps, "security import")]
+    assert "$RUNNER_TEMP" in imp
+    assert "set-key-partition-list" in imp
+    assert "-T /usr/bin/codesign" in imp
+    assert "list-keychains -d user -s" in imp  # on the search list, keeping the others
+    assert "add-trusted-cert -d -r trustRoot -p codeSign" in imp
+    assert "rm -f" in imp
+    assert "ditto -x -k" in steps[_step_index(steps, "ditto -x -k")]
+
+
+def test_mac_sign_fails_without_the_certificate():
+    steps = _steps(_job(_release(), "mac-sign"))
+    check = steps[_step_index(steps, "::error::")]
+    assert "MAC_SIGN_P12_BASE64" in check and "MAC_SIGN_P12_PASSWORD" in check
+    assert _step_index(steps, "::error::") < _step_index(steps, "security import")
+    # secrets go in through env, never into the command line
+    assert not re.search(r"run:.*\$\{\{\s*secrets", check)
+
+
+def test_publish_attaches_the_exe_and_both_dmgs():
+    text = _release()
+    publish = _job(text, "publish")
+    assert "mac-sign" in publish.split("steps:", 1)[0]
+    assert "pattern: mac-dmg-*" in publish
+    assert "merge-multiple: true" in publish
+    cmd = publish.split("gh release create", 1)[1]
+    assert "MapleLens-Setup-$VERSION.exe" in cmd
+    assert '"dist/MapleLens-$VERSION.dmg"' in cmd
+    assert '"dist/MapleLens-$VERSION-intel.dmg"' in cmd
+
+
+def test_ci_checks_on_both_macs():
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert "os: [windows-latest, macos-latest, macos-15-intel]" in ci
+
+
+def test_mac_sign_uses_only_apple_tools_and_a_failed_delete_fails_the_job():
+    steps = _steps(_job(_release(), "mac-sign"))
+    assert "openssl" not in "".join(steps)
+    imp = steps[_step_index(steps, "security import")]
+    assert "security find-certificate -c" in imp
+    assert "sudo security add-trusted-cert -d -r trustRoot -p codeSign" in imp
+    delete = steps[_step_index(steps, "security delete-keychain")]
+    assert "|| true" not in delete
+    assert "rm -f" in delete

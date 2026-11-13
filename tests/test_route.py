@@ -98,3 +98,13 @@ def test_hidden_next_cab_step_or_arrived_is_false():
     there = hidden_trip([(0, True)])
     there.on_map("B")
     assert there.arrived and there.hidden_next(None) is False
+
+
+def test_target_is_the_npc_on_arrival():
+    t = Trip(graph(), "A", "B", False, at=(50, 60))
+    assert t.target((0, 0)) == (0, 0)  # en route: the portal
+    t.on_map("B")
+    assert t.arrived and t.target((0, 0)) == (50, 60)
+    u = Trip(graph(), "A", "B", False)
+    u.on_map("B")
+    assert u.target((0, 0)) is None

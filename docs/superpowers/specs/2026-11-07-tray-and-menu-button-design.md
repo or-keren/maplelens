@@ -93,7 +93,9 @@ traffic, and they send no input to it.
   - Nothing a tick does brings a hidden box or `Layer` back. That includes
     `allow_typing`'s `show()` and the tick's `layer.show()`.
   - The item exists only where there's a tray icon. On a Mac there would be no way back
-    once the box and its ⋯ were gone.
+    once the box and its ⋯ were gone. *(Since 2026-11-08 the Mac has a Dock icon: its
+    menu is the box's, a click on it shows a hidden box, and so the Mac has the item too.
+    See the Mac installer spec.)*
 - **Text points at ⋯:**
   - `LOOKING` → "Looking for MapleStory…" alone. The ⋯ beside it is hint enough (Daniel,
     2026-11-07, which replaced "… click ⋯ to pick the game window").

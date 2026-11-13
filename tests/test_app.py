@@ -2,14 +2,23 @@ import hashlib
 import re
 import sys
 import threading
+import types
 from typing import ClassVar
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QObject, Signal
 
-from maplelens import app
-from maplelens.readers import glyphs, ocr
+import maplelens
+from maplelens import app, overlay, reader, update_mac
+from maplelens.readers import Reading, glyphs, ocr
 from maplelens.tools.path_arrow import maps
+
+
+@pytest.fixture(autouse=True)
+def apple_silicon(monkeypatch):
+    """The Mac tests pick Apple silicon's dmg whatever CPU runs them."""
+    monkeypatch.setattr(maplelens.update._platform, "machine", lambda: "arm64")
 
 
 @pytest.fixture
@@ -28,6 +37,45 @@ def test_self_check_passes_from_source(no_cache):
 def test_self_check_fails_without_templates(tmp_path, monkeypatch, no_cache):
     monkeypatch.setattr(glyphs, "TEMPLATES", tmp_path)
     assert app.self_check() == 1
+
+
+def test_self_check_fails_without_classes_json(monkeypatch, no_cache):
+    from maplelens.tools.class_helper import data
+
+    monkeypatch.setattr(data, "load", lambda: (_ for _ in ()).throw(FileNotFoundError()))
+    assert app.self_check() == 1
+
+
+def test_self_check_fails_without_quests_json(monkeypatch, no_cache):
+    from maplelens.tools.quest_helper import data
+
+    monkeypatch.setattr(data, "load", lambda: (_ for _ in ()).throw(FileNotFoundError()))
+    assert app.self_check() == 1
+
+
+def test_self_check_fails_without_quest_names(monkeypatch, no_cache):
+    from maplelens.readers import quest_window
+
+    monkeypatch.setattr(
+        quest_window, "known_quest_names", lambda: (_ for _ in ()).throw(FileNotFoundError())
+    )
+    assert app.self_check() == 1
+
+
+class _Path:
+    def __init__(self, starts: bool):
+        self.starts, self.running, self.calls = starts, False, []
+
+    def go(self, *args):
+        self.calls.append(args)
+        self.running = self.starts
+
+
+@pytest.mark.parametrize("starts, selected", [(True, []), (False, [1])])
+def test_quest_go_shows_the_path_tab_only_when_no_trip_runs(starts, selected):
+    path, picked = _Path(starts), []
+    app.quest_go(path, picked.append)("town", (1, 2), "Heena")
+    assert path.calls == [("town", (1, 2), "Heena")] and picked == selected
 
 
 def test_self_check_fails_without_ocr(monkeypatch, no_cache):
@@ -137,8 +185,13 @@ class _Raises:
 
 class _Quiet:
     running = False
+    dot = False
+    open = False
 
     def update(self, *_):
+        pass
+
+    def hide_marks(self):
         pass
 
 
@@ -164,10 +217,114 @@ def test_a_tool_error_is_logged_once(log, monkeypatch):
     monkeypatch.setattr(sys, "stderr", None)  # a windowed exe has no console
     seen: set[str] = set()
     for _ in range(3):
-        app.update_tools(_Box(), _Raises(), _Quiet(), None, None, 0.0, seen)
+        app.update_tools(
+            _Box(), _Raises(), _Quiet(), _Quiet(), _Quiet(), _Quiet(), None, None, 0.0, seen
+        )
     text = log.read_text(encoding="utf-8")
     assert text.count("ValueError: bad frame") == 1
     assert "Traceback" in text
+
+
+class _FocusBox:
+    def __init__(self, current=0):
+        self.current, self.touches = current, 0
+        self.selects = []
+
+    def select(self, i):
+        self.selects.append(i)
+        self.current = i
+
+    def set_tab_dot(self, *_):
+        pass
+
+
+class _Open(_Quiet):
+    def __init__(self, open_=True):
+        self.open = open_
+
+    def update(self, r, *_):
+        self.open = r is not None
+
+
+def _focus(box):
+    return app.QuestFocus(box, 3)
+
+
+def test_switches_on_open_and_back_on_close():
+    box = _FocusBox(1)
+    f = _focus(box)
+    f.update(True)
+    assert box.current == 1  # one reading isn't enough
+    f.update(True)
+    assert box.current == 3
+    f.update(False)
+    f.update(False)
+    assert box.current == 1
+
+
+def test_touch_keeps_the_tab():
+    box = _FocusBox(0)
+    f = _focus(box)
+    f.update(True)
+    f.update(True)
+    box.touches += 1
+    f.update(False)
+    f.update(False)
+    assert box.current == 3
+
+
+def test_a_touch_before_opening_does_not_block_the_way_back():
+    box = _FocusBox(1)
+    box.touches = 5
+    f = _focus(box)
+    for o in (True, True, False, False):
+        f.update(o)
+    assert box.selects == [3, 1]
+
+
+def test_already_on_quests_stays():
+    box = _FocusBox(3)
+    f = _focus(box)
+    for o in (True, True, False, False):
+        f.update(o)
+    assert box.selects == []
+
+
+def test_one_missed_reading_keeps_the_tab():
+    box = _FocusBox(0)
+    f = _focus(box)
+    for o in (True, True, False, True):
+        f.update(o)
+    assert box.selects == [3]  # the single closed reading didn't switch back
+    f.update(True)
+    assert box.selects == [3]
+
+
+def test_no_reading_counts_as_closed():
+    box = _FocusBox(2)
+    f = app.QuestFocus(box, 3)
+    q = _Open()
+    for r in ("r", "r", None, None):
+        app.update_tools(box, _Quiet(), _Quiet(), _Quiet(), q, f, r, None, 0.0, set())
+        if r is None:
+            assert not q.open
+        if r == "r" and box.selects:
+            assert box.current == 3
+    assert box.selects == [3, 2]
+
+
+def test_quest_tool_error_does_not_stop_the_others(log, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", None)
+    ran = []
+
+    class Cls(_Quiet):
+        def update(self, *_):
+            ran.append(1)
+
+    q = _Raises()
+    q.open = False
+    app.update_tools(_Box(), _Quiet(), _Quiet(), Cls(), q, _Quiet(), None, None, 0.0, set())
+    assert ran and "bad frame" in log.read_text(encoding="utf-8")
 
 
 def test_picker_leaves_out_our_own_windows(monkeypatch):
@@ -277,14 +434,15 @@ def test_installer_knows_the_update_flag():
 # --- the update check ---------------------------------------------------------------
 
 
-def _latest(v, digest="sha256:" + "0" * 64):
-    """A releases/latest reply for version `v`."""
+def _latest(v, digest="sha256:" + "0" * 64, name=None):
+    """A releases/latest reply for version `v`, its one asset the Windows setup or `name`."""
+    name = name or f"MapleLens-Setup-{v}.exe"
     return {
         "tag_name": f"v{v}",
         "assets": [
             {
-                "name": f"MapleLens-Setup-{v}.exe",
-                "browser_download_url": f"https://example.invalid/MapleLens-Setup-{v}.exe",
+                "name": name,
+                "browser_download_url": f"https://example.invalid/{name}",
                 "digest": digest,
             }
         ],
@@ -320,13 +478,21 @@ class _Fetch:
         return self.reply
 
 
+@pytest.fixture(autouse=True)
+def _screen_access(monkeypatch):
+    """Screen Recording allowed, as it always is on Windows; a test that needs it off says so."""
+    monkeypatch.setattr(app.capture, "has_access", lambda: True)
+
+
 @pytest.fixture
 def make_check(qt_box, tmp_path):
-    """make_check(fetch, settings, save, **kw): an UpdateCheck on qt_box, running 0.1.0."""
+    """make_check(fetch, settings, save, **kw): an UpdateCheck on qt_box, running 0.1.0
+    on Windows unless kw says platform="darwin"."""
 
     def make(fetch, settings=None, save=lambda: None, **kw):
         settings = {"update_dismissed": None} if settings is None else settings
         kw.setdefault("folder", tmp_path / "updates")
+        kw.setdefault("platform", "win32")
         return app.UpdateCheck(qt_box, settings, save, fetch, "0.1.0", set(), now=0.0, **kw)
 
     return make
@@ -479,13 +645,8 @@ def installed(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "version", lambda name: "0.1.0")
 
 
-@pytest.mark.parametrize("where", ["source", "mac"])
-def test_from_source_or_on_the_mac_there_is_no_update_check(qt_box, monkeypatch, where):
-    if where == "source":
-        monkeypatch.delattr(sys, "frozen", raising=False)
-    else:
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        monkeypatch.setattr(sys, "platform", "darwin")
+def test_from_source_there_is_no_update_check(qt_box, monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
     fetch = _Fetch(NEWER)
     assert app.update_check(qt_box, {"update_check": True}, lambda: None, set(), 0.0, fetch) is None
     assert fetch.calls == 0
@@ -623,7 +784,7 @@ def test_fetch_asks_github_with_only_the_version(monkeypatch):
 
     seen = {}
 
-    def urlopen(req, timeout):
+    def urlopen(req, timeout, context):
         seen["url"], seen["headers"], seen["timeout"] = req.full_url, dict(req.headers), timeout
         return io.BytesIO(json.dumps(NEWER).encode())
 
@@ -772,12 +933,134 @@ def test_clear_updates_skips_what_it_cant_delete(tmp_path, monkeypatch):
     app.clear_updates(tmp_path)  # Setup may still be running; the next start clears it
 
 
+# --- the Mac: the dmg, where the app lives, what the last update left -----------------
+
+DMG = _latest("0.2.0", GOOD, name="MapleLens-0.2.0.dmg")
+
+
+def test_the_installed_mac_app_gets_an_update_check(qt_box, monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(app, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(app, "version", lambda name: "0.1.0")
+    folder = tmp_path / "updates"
+    folder.mkdir()
+    (folder / "MapleLens-0.1.0.dmg").write_bytes(b"last update's dmg")
+    (folder / update_mac.RESULT).write_text("failed\n")
+    settings = {"update_check": True, "update_dismissed": None}
+    check = app.update_check(qt_box, settings, lambda: None, set(), 0.0, _Fetch(DMG))
+    assert isinstance(check, app.UpdateCheck)
+    assert _menu(qt_box) == [
+        "Check for updates now",
+        "Check for updates automatically",
+        "Quit MapleLens",
+    ]
+    assert list(folder.iterdir()) == []  # the old dmg cleared, the result read once
+    assert qt_box._notice_text.text() == app.UPDATE_FAILED
+    assert check._install is update_mac.install_update
+    assert check._can_install() == app.MOVE_TO_APPLICATIONS  # pytest isn't inside a .app
+    app_exe = tmp_path / "MapleLens.app" / "Contents" / "MacOS" / "MapleLens"
+    monkeypatch.setattr(sys, "executable", str(app_exe))
+    assert check._can_install() is None  # a writable folder
+    _run(check, 10.0)
+    assert check.release is not None and check.release.version == "0.2.0"  # found the dmg
+
+
+def test_mac_downloads_the_dmg_checks_it_and_hands_over(qt_box, make_check, tmp_path):
+    installs, download = [], _Download()
+    check = make_check(_Fetch(DMG), download=download, install=installs.append, platform="darwin")
+    _run(check, 10.0)
+    qt_box.actions()[0].trigger()  # "Update to 0.2.0…"
+    _finish_download(check)
+    dmg = tmp_path / "updates" / "MapleLens-0.2.0.dmg"
+    assert installs == [dmg]
+    assert dmg.read_bytes() == SETUP
+    [(_, dest)] = download.calls
+    assert dest.name == "MapleLens-0.2.0.dmg.part"
+
+
+def test_an_intel_mac_downloads_the_intel_dmg(qt_box, make_check, tmp_path, monkeypatch):
+    monkeypatch.setattr(maplelens.update._platform, "machine", lambda: "x86_64")
+    installs, download = [], _Download()
+    intel = _latest("0.2.0", GOOD, name="MapleLens-0.2.0-intel.dmg")
+    check = make_check(_Fetch(intel), download=download, install=installs.append, platform="darwin")
+    _run(check, 10.0)
+    qt_box.actions()[0].trigger()  # "Update to 0.2.0…"
+    _finish_download(check)
+    assert installs == [tmp_path / "updates" / "MapleLens-0.2.0-intel.dmg"]
+
+
+def test_mac_refuses_to_download_from_the_dmg(qt_box, make_check):
+    download = _Download()
+    check = make_check(
+        _Fetch(DMG),
+        download=download,
+        platform="darwin",
+        can_install=lambda: app.MOVE_TO_APPLICATIONS,
+    )
+    _run(check, 10.0)
+    qt_box.actions()[0].trigger()
+    assert check._download_thread is None
+    assert download.calls == []
+    assert qt_box._notice_text.text() == app.MOVE_TO_APPLICATIONS
+    check.poll(10.0 + app.UpdateCheck.REPLY_S)
+    assert not qt_box._notice.isVisibleTo(qt_box)
+    assert _menu(qt_box)[0] == "Update to 0.2.0…"  # the item stays for after the move
+    assert check.status() == app.update_available("0.2.0")  # About says so too
+
+
+def test_a_blocked_update_asks_to_allow_it(qt_box, make_check, log, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", None)
+    opened = []
+    monkeypatch.setattr(app.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    check = make_check(_Fetch(DMG), platform="darwin")
+    check.show_result("blocked")
+    assert qt_box._notice_text.text() == app.ALLOW_UPDATES
+    assert _menu(qt_box) == [app.ALLOW_UPDATES_ITEM, "Quit MapleLens"]
+    qt_box.actions()[0].trigger()
+    assert opened == [app.APP_MANAGEMENT_URL]
+    assert "blocked" in log.read_text(encoding="utf-8")
+    _run(check, 10.0)  # the first check finds 0.2.0: the line stays until it's closed
+    assert qt_box._notice_text.text() == app.ALLOW_UPDATES
+    qt_box._notice_close.click()
+    _run(check, 10.0 + app.UpdateCheck.EVERY_S)
+    assert qt_box._notice_text.text() == app.update_notice("0.2.0")
+
+
+def test_a_failed_mac_update_says_so_on_the_next_start(qt_box, make_check, log, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", None)
+    check = make_check(_Fetch(), platform="darwin")
+    check.show_result(None)  # no update last time
+    assert not qt_box._notice.isVisibleTo(qt_box)
+    assert log.read_text(encoding="utf-8") == ""
+    check.show_result("failed")
+    assert qt_box._notice_text.text() == app.UPDATE_FAILED
+    assert "failed" in log.read_text(encoding="utf-8")
+
+
+def test_clear_updates_keeps_the_result(tmp_path):
+    names = ["MapleLens-0.1.0.dmg", "MapleLens-0.2.0.dmg.part", "MapleLens-Setup-0.1.0.exe"]
+    for name in [*names, update_mac.RESULT]:
+        (tmp_path / name).write_bytes(b"x")
+    app.clear_updates(tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == [update_mac.RESULT]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS's CA list")
+def test_tls_on_the_mac_trusts_macos_cas_without_homebrew(monkeypatch):
+    # the shipped OpenSSL looks for CAs in Homebrew's folder; a friend's Mac has none
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/cert.pem")
+    monkeypatch.setenv("SSL_CERT_DIR", "/nonexistent")
+    assert app._tls("darwin").cert_store_stats()["x509_ca"] > 0
+
+
 def test_download_file_saves_the_reply_with_the_user_agent(tmp_path, monkeypatch):
     import io
 
     seen = {}
 
-    def urlopen(req, timeout):
+    def urlopen(req, timeout, context):
         seen["url"], seen["headers"] = req.full_url, dict(req.headers)
         return io.BytesIO(SETUP)
 
@@ -795,7 +1078,8 @@ def test_the_box_text_points_at_the_menu_button():
     assert app.LOOKING == "Looking for MapleStory…"  # the ••• beside it is the hint
     assert app.update_notice("1.2.3") == f"Update to 1.2.3: click {MENU_MARK}"
     assert app.UPDATE_FAILED == f"Update failed: click {MENU_MARK}"
-    for text in (app.LOOKING, app.update_notice("1.2.3"), app.UPDATE_FAILED):
+    mac = (app.MOVE_TO_APPLICATIONS, app.ALLOW_UPDATES)
+    for text in (app.LOOKING, app.update_notice("1.2.3"), app.UPDATE_FAILED, *mac):
         assert "right" not in text.lower()
 
 
@@ -858,20 +1142,20 @@ def test_no_tray_where_there_is_none(qt_box, fake_tray):
     assert fake_tray.made == []
 
 
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_the_tray_is_windows_only(monkeypatch, platform):
+def test_no_tray_on_linux(monkeypatch):
     from PySide6.QtWidgets import QSystemTrayIcon
 
-    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", staticmethod(lambda: True))
     assert not app.tray_available()
 
 
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
 @pytest.mark.parametrize("there", [True, False])
-def test_on_windows_the_tray_needs_a_notification_area(monkeypatch, there):
+def test_the_tray_needs_a_notification_area_or_menu_bar(monkeypatch, platform, there):
     from PySide6.QtWidgets import QSystemTrayIcon
 
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", staticmethod(lambda: there))
     assert app.tray_available() is there
 
@@ -931,10 +1215,33 @@ def test_with_no_tray_there_is_no_hide_item(qt_box):
     assert _menu(qt_box) == ["Quit MapleLens"]
 
 
+def test_on_the_mac_a_tray_click_opens_the_menu_and_doesnt_toggle(qt_box, fake_tray):
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    from maplelens.overlay import Layer
+
+    tray = app.make_tray(qt_box, app.ICON, available=True, tray_cls=fake_tray)
+    shown = app.add_hide(qt_box, Layer(), tray, click=False)
+    assert _menu(qt_box) == ["Hide MapleLens", "Quit MapleLens"]  # the way back
+    tray.activated.emit(QSystemTrayIcon.Trigger)
+    assert shown.on
+
+
+def test_on_the_mac_maplelens_leaves_the_dock(monkeypatch):
+    calls = []  # never the real activation policy
+    fake = types.SimpleNamespace(make_accessory=lambda: calls.append("accessory"))
+    monkeypatch.setitem(sys.modules, "maplelens.overlay_mac", fake)
+    monkeypatch.setattr(maplelens, "overlay_mac", fake, raising=False)
+    app.hide_from_dock()
+    assert calls == ["accessory"]
+
+
 class _Recorder:
     """A tool that keeps what each update got."""
 
     running = False
+    dot = False
+    open = False
 
     def __init__(self):
         self.updates = []
@@ -949,18 +1256,18 @@ def game_found(monkeypatch):
     rect = (0, 0, 800, 600)
     monkeypatch.setattr(app, "find_game", lambda settings, save: 42)
     monkeypatch.setattr(app.capture, "client_rect", lambda hwnd: rect)
-    monkeypatch.setattr(app.capture, "grab", lambda hwnd, r: "frame")
-    monkeypatch.setattr(app, "read_all", lambda frame, now: READING)
+    monkeypatch.setattr(app.capture, "grab", lambda hwnd, r: np.full((600, 800, 3), 60, np.uint8))
+    monkeypatch.setattr(reader, "read_all", lambda frame, now, due=None: READING)
     return rect
 
 
-READING = object()
+READING = Reading(5.0, None, None, None, None)  # nothing on screen: found() is empty
 
 
 def _tick(box, layer, shown, updates=None):
     from PySide6.QtWidgets import QLabel
 
-    for title in ("EXP", "Path"):  # the tick sets the Path tab's dot
+    for title in ("EXP", "Path", "Class"):  # the tick sets the Path and Class tabs' dots
         box.add_tab(title, QLabel())
     exp, path = _Recorder(), _Recorder()
     tick = app.Tick(
@@ -970,6 +1277,9 @@ def _tick(box, layer, shown, updates=None):
         layer=layer,
         exp=exp,
         path=path,
+        cls=_Recorder(),
+        quest=_Recorder(),
+        focus=_Quiet(),
         updates=updates,
         seen=set(),
         shown=shown,
@@ -998,6 +1308,76 @@ def test_a_tick_with_the_game_shows_the_layer(hide, game_found):
     assert exp.updates == [(READING, game_found, 5.0)]
 
 
+def test_a_tick_leaves_fullscreen_black_bars_out(hide, game_found, monkeypatch):
+    box, layer, _, shown = hide
+    frame = np.zeros((600, 800, 3), np.uint8)
+    frame[75:525] = 60  # the 16:9 picture, between two 75-row bars
+    monkeypatch.setattr(app.capture, "grab", lambda hwnd, r: frame)
+    seen = []
+    monkeypatch.setattr(
+        reader, "read_all", lambda f, now, due=None: seen.append(f.shape) or READING
+    )
+    tick, exp = _tick(box, layer, shown)
+    tick.run(5.0)
+    assert seen == [(450, 800, 3)]
+    assert exp.updates == [(READING, (0, 75, 800, 450), 5.0)]
+
+
+def test_a_tick_without_an_answer_leaves_the_tools_alone(hide, game_found):
+    box, layer, _, shown = hide
+    layer.hide()
+    tick, exp = _tick(box, layer, shown)
+    tick.reader = types.SimpleNamespace(ask=lambda job: None, take=lambda: None)
+    tick.run(5.0)
+    assert exp.updates == []
+    assert layer.isVisible()
+
+
+def test_a_tick_searches_a_closed_window_on_its_turn(hide, game_found, monkeypatch):
+    box, layer, _, shown = hide
+    dues = []
+
+    def read_all(f, now, due=None):
+        dues.append(due)
+        tracker = "a tracker" if len(dues) > 2 and "tracker" in due else None  # open from tick 2
+        return Reading(now, None, None, None, None, tracker=tracker)
+
+    monkeypatch.setattr(reader, "read_all", read_all)
+    tick, _ = _tick(box, layer, shown)
+    for i in range(7):
+        tick.run(float(i))
+    assert [i for i, d in enumerate(dues) if "tracker" in d] == [3, 4, 5, 6]  # its turn, then seen
+    assert [i for i, d in enumerate(dues) if "stats" in d] == [0, 4]
+
+
+def test_a_window_found_in_a_lagging_answer_is_due_on_the_next_job(hide, game_found):
+    box, layer, _, shown = hide
+    tick, _ = _tick(box, layer, shown)
+    jobs = []
+
+    class Lagging:  # like ProcessReader: an answer is there on the next tick, not this one
+        inflight, fresh = None, False
+
+        def ask(self, job):
+            jobs.append(job)
+            self.inflight = (game_found, Reading(5.0, None, None, None, None, stats="s"))
+            self.fresh = True
+
+        def take(self):
+            if self.fresh:
+                self.fresh = False
+                return None
+            answer, self.inflight = self.inflight, None
+            return answer
+
+    tick.reader = Lagging()
+    for i in range(3):
+        tick.run(float(i))
+    assert "stats" in jobs[0][3]  # its search turn (turn 0)
+    assert "stats" in jobs[1][3]  # found in the answer taken first thing on tick 1
+    assert "stats" in jobs[2][3]
+
+
 def test_a_tick_without_the_game_hides_the_layer_and_says_looking(hide, monkeypatch):
     box, layer, _, shown = hide
     monkeypatch.setattr(app, "find_game", lambda settings, save: None)
@@ -1006,6 +1386,19 @@ def test_a_tick_without_the_game_hides_the_layer_and_says_looking(hide, monkeypa
     assert not layer.isVisible()
     assert box._status.text() == app.LOOKING
     assert exp.updates == [(None, None, 5.0)]
+
+
+def test_a_tick_without_screen_recording_asks_for_it_and_never_looks(hide, game_found, monkeypatch):
+    box, layer, _, shown = hide
+    monkeypatch.setattr(app.capture, "has_access", lambda: False)
+    monkeypatch.setattr(app, "find_game", lambda settings, save: pytest.fail("looked"))
+    tick, exp = _tick(box, layer, shown)
+    tick.hwnd = 42  # found before the permission was revoked
+    tick.run(5.0)
+    assert not layer.isVisible()
+    assert box._status.text() == app.NEEDS_SCREEN_RECORDING
+    assert exp.updates == [(None, None, 5.0)]
+    assert tick.hwnd is None
 
 
 class _Gate:
@@ -1090,7 +1483,7 @@ def test_the_about_item_opens_the_view_with_the_version_and_the_repo(qt_box, mon
     monkeypatch.setattr(qt_box, "show_about", lambda *a, **kw: opened.append((a, kw)))
     app.add_about(qt_box, None)
     qt_box.actions()[0].trigger()
-    url = "https://github.com/someone/fork"
+    url = "https://github.com/or-keren/maplelens"  # not the fork the update check asks
     assert opened == [(("0.1.0", "Running from source", url), {"accent": False})]
 
 
@@ -1113,3 +1506,151 @@ def test_the_about_line_follows_a_check_on_each_tick(qt_box, make_check, monkeyp
     tick.run(6.0)
     assert qt_box._about_updates.text() == "Update to 0.2.0 available"
     assert qt_box.about_open  # still open: the line changed in place
+
+
+def test_screen_status_asks_for_the_permission_before_looking():
+    assert app.screen_status(False, None) == app.NEEDS_SCREEN_RECORDING
+    assert app.screen_status(False, 42) == app.NEEDS_SCREEN_RECORDING  # revoked mid-run
+    assert app.screen_status(True, None) == app.LOOKING
+    assert app.screen_status(True, 42) is None
+
+
+def test_permission_line_fits_the_box(qt_box):
+    qt_box.set_status(app.NEEDS_SCREEN_RECORDING)
+    assert qt_box._status.sizeHint().width() <= overlay.TAB_W
+    assert "right" not in app.NEEDS_SCREEN_RECORDING.lower()  # the ••• is the way in
+
+
+@pytest.fixture
+def no_prompt(monkeypatch):
+    """Screen Recording already allowed: the real calls could show the system prompt."""
+    monkeypatch.setattr(app.capture, "has_access", lambda: True)
+    monkeypatch.setattr(app.capture, "request_access", lambda: pytest.fail("prompted"))
+
+
+def test_the_mac_box_has_the_screen_recording_item(qt_box, monkeypatch, no_prompt):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    opened = []
+    monkeypatch.setattr(app.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    app.setup_screen_recording(qt_box)
+    assert _menu(qt_box) == ["Open Screen Recording settings…", "Quit MapleLens"]
+    qt_box.actions()[0].trigger()
+    assert opened == [app.SCREEN_RECORDING_URL]
+
+
+def test_windows_box_has_no_screen_recording_item(qt_box, monkeypatch, no_prompt):
+    monkeypatch.setattr(sys, "platform", "win32")
+    app.setup_screen_recording(qt_box)
+    assert _menu(qt_box) == ["Quit MapleLens"]
+
+
+def test_main_no_longer_exits_without_screen_recording(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QApplication
+
+    real = QApplication.instance() or QApplication([])
+
+    class Proxy:  # the one QApplication a process allows, with exec() ending at once
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def exec(self):
+            return 0
+
+    fake = lambda argv: Proxy()  # noqa: E731
+    fake.quit = QApplication.quit
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(sys, "argv", ["maplelens"])
+    monkeypatch.setattr(app, "QApplication", fake)
+    monkeypatch.setattr(app, "mark_running", lambda: True)
+    monkeypatch.setattr(app, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(app, "update_check", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_log_path", None)
+    requests = []
+    monkeypatch.setattr(app.capture, "has_access", lambda: False)
+    monkeypatch.setattr(app.capture, "request_access", lambda: requests.append(1))
+    assert app.main() == 0
+    assert requests == [1]
+
+
+class _BuildTool:
+    def __init__(self):
+        self.names, self.name, self.picked = ["LUK", "Sindit"], "LUK", []
+        self.builds_changed = None
+
+    def build_names(self):
+        return self.names
+
+    def build_name(self):
+        return self.name
+
+    def pick_build(self, name):
+        self.picked.append(name)
+
+
+def test_build_menu_follows_the_class_tool(qt_box):
+    tool = _BuildTool()
+    action = app.add_build_menu(qt_box, tool)
+    assert not action.isVisible()
+    assert [a.text() for a in qt_box.actions()][-1] == "Quit MapleLens"  # above Quit
+    tool.builds_changed()
+    assert action.isVisible() and action.text() == "Build: LUK"
+    tool.name = "Sindit"
+    tool.builds_changed()
+    assert action.text() == "Build: Sindit"
+    tool.names = []  # a job with no plan, or one build
+    tool.builds_changed()
+    assert not action.isVisible()
+
+
+def test_build_menu_lists_and_picks(qt_box):
+    tool = _BuildTool()
+    action = app.add_build_menu(qt_box, tool)
+    tool.builds_changed()
+    menu = action.menu()
+    menu.aboutToShow.emit()
+    assert [a.text() for a in menu.actions()] == ["LUK", "Sindit"]
+    menu.actions()[1].trigger()
+    assert tool.picked == ["Sindit"]
+
+
+def test_make_reader_uses_a_helper_on_the_mac():
+    assert isinstance(app.make_reader("darwin"), reader.ProcessReader)
+    assert isinstance(app.make_reader("win32"), reader.InlineReader)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the helper process is the Mac's")
+def test_self_check_fails_when_the_helper_never_answers(monkeypatch, no_cache):
+    class Silent:
+        def __init__(self, work=None):
+            pass
+
+        def ask(self, job):
+            pass
+
+        def take(self):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(app, "ProcessReader", Silent)
+    monkeypatch.setattr(app, "HELPER_CHECK_S", 0.2)
+    assert app.self_check() == 1
+
+
+def test_a_loading_screen_leaves_the_box_where_the_bars_put_it(hide, game_found, monkeypatch):
+    # fullscreen on a 16:10 Mac: bars above and below; a map change's black frame has none
+    box, layer, _, shown = hide
+    black = np.zeros((600, 800, 3), np.uint8)
+    barred = black.copy()
+    barred[75:525] = 60  # 800x450, 16:9
+    frames = [barred, black, barred]
+    monkeypatch.setattr(app.capture, "grab", lambda hwnd, r: frames.pop(0))
+    tick, _ = _tick(box, layer, shown)
+    tick.run(1.0)
+    at = box.pos()
+    tick.run(2.0)  # the loading screen
+    assert box.pos() == at
+    tick.reader = types.SimpleNamespace(ask=lambda job: None, take=lambda: None)
+    tick.run(3.0)  # an answer still on its way
+    assert box.pos() == at

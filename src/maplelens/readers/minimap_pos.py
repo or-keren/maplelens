@@ -31,6 +31,10 @@ DOT_LO, DOT_HI = (25, 180, 200), (110, 255, 255)
 DOT_SIDE = (5, 7)
 DOT_SQUARE = 1  # max width - height difference
 DOT_AREA = (18, 28)
+# Its fill is orange-yellow: R over G by 23-26 (mean over the blob) on every fixture and Mac
+# grab. A Mac's fullscreen stretches the picture 1.107x and blurs the dot to 6x5 of 19-21
+# px, a Henesys roof's size, but the roofs are green-yellow (R - G = -15).
+DOT_RG = 10
 # NPC markers: green (BGR) ovals, 4x7 px of 20-23 px normalized at 2560 (Kerning City,
 # Henesys, Perion, Lith Harbor). Partly covered ones (3x7) are dropped.
 NPC_LO, NPC_HI = (0, 170, 0), (90, 255, 90)
@@ -110,6 +114,14 @@ def _portals(img: np.ndarray) -> tuple[tuple[float, float], ...]:
     )
 
 
+def _orange(img: np.ndarray, c, w: int, h: int) -> bool:
+    """Whether the dot-coloured blob of size w x h centred at `c` is orange-yellow (DOT_RG)."""
+    x0, y0 = round(c[0] - w / 2), round(c[1] - h / 2)
+    box = img[max(y0, 0) : y0 + h, max(x0, 0) : x0 + w].astype(int)
+    px = box[glyphs.mask(box, DOT_LO, DOT_HI)]
+    return px.size > 0 and (px[:, 2] - px[:, 1]).mean() >= DOT_RG
+
+
 def read_view(frame: np.ndarray) -> MinimapView | None:
     """The minimap's map area size, "you" dot, NPC markers and portal spirals, or None.
 
@@ -129,6 +141,7 @@ def read_view(frame: np.ndarray) -> MinimapView | None:
         and max(w, h) <= DOT_SIDE[1]
         and abs(w - h) <= DOT_SQUARE
         and DOT_AREA[0] <= px <= DOT_AREA[1]
+        and _orange(img, c, w, h)
     ]
     if len(dots) != 1:
         return None

@@ -2,8 +2,10 @@
 
 import contextlib
 import json
+import multiprocessing
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import threading
@@ -11,23 +13,28 @@ import time
 import traceback
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction, QIcon, QImage
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QImage
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 import maplelens
-from maplelens import capture, update
+from maplelens import capture, update, update_mac
 from maplelens.overlay import ABOUT, MENU_MARK, Box, Layer
-from maplelens.readers import glyphs, ocr, read_all
+from maplelens.reader import InlineReader, ProcessReader, Rect
+from maplelens.readers import due, found, glyphs, ocr, quest_window
 from maplelens.store import data_dir, load_settings, save_settings
-from maplelens.tools.exp_meter.history import open_db
+from maplelens.tools.class_helper import data as class_data
+from maplelens.tools.class_helper.ui import MARKS, ClassHelperTool
+from maplelens.tools.exp_meter.history import best_rate, open_db
 from maplelens.tools.exp_meter.ui import ExpMeterTool
 from maplelens.tools.path_arrow import maps
 from maplelens.tools.path_arrow.ui import PathArrowTool
+from maplelens.tools.quest_helper import data as quest_data
+from maplelens.tools.quest_helper.ui import QuestHelperTool
 
 _TICK_MS = 500
 APP_NAME = "MapleLens"  # also the title of our own windows, which the picker leaves out
@@ -40,6 +47,11 @@ ICON = Path(maplelens.__file__).parent / "data" / "icon.ico"
 DEFAULT_TITLE = "MapleStory"
 _log_path: Path | None = None  # where report_once also writes; set by start_log
 LOOKING = f"Looking for {DEFAULT_TITLE}…"  # the box's ••• beside it has the window picker
+# Allow it (the menu item opens the page), then reopen: macOS grants a running app nothing.
+NEEDS_SCREEN_RECORDING = f"Allow, then reopen: click {MENU_MARK}"
+SCREEN_RECORDING_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+)
 # Held while MapleLens runs. The Windows installer and uninstaller look for it (AppMutex in
 # packaging/windows/maplelens.iss) and ask the player to close MapleLens first.
 APP_MUTEX = "MapleLensRunning"
@@ -59,12 +71,33 @@ def build_box(
     box = Box("exp_meter", settings, save)
     for tool in tools:
         box.add_tab(tool.title, tool.tab)
+        box.on_tab_w(tool.set_tab_w)
     if pick:
         box.add_submenu("Pick game window…", game_choices, pick)
     # quit() runs aboutToQuit, where main() saves through shutdown()
     box.add_menu_item("Quit MapleLens", QApplication.quit)
     box.show()
     return box
+
+
+def screen_status(has_access: bool, hwnd) -> str | None:
+    """The box's status line: the permission first, then the game search; None when fine."""
+    if not has_access:
+        return NEEDS_SCREEN_RECORDING
+    return None if hwnd else LOOKING
+
+
+def setup_screen_recording(box: Box) -> None:
+    """Show the system's Screen Recording prompt if it's needed (the box says so after);
+    on the Mac add the menu item that opens its settings page, above Quit."""
+    if not capture.has_access():
+        capture.request_access()
+    if sys.platform == "darwin":
+        box.add_menu_item(
+            "Open Screen Recording settings…",
+            lambda: QDesktopServices.openUrl(QUrl(SCREEN_RECORDING_URL)),
+            at=-1,
+        )
 
 
 def find_game(settings: dict, save: Callable[[], None]) -> int | None:
@@ -127,12 +160,43 @@ def poll_updates(updates: "UpdateCheck | None", now: float, seen: set[str]) -> N
         report_once(e, seen)
 
 
-def update_tools(  # noqa: PLR0913, PLR0917 - one per tool plus the frame; a bundle would hide them
-    box: Box, exp, path, reading, rect, now: float, seen: set[str]
-) -> None:
-    """Feed both tools the same reading; the Path tab shows a dot while a trip runs.
+class QuestFocus:
+    """Switch the box to the Quests tab while a quest window is open in the game.
 
-    Each tool runs on its own: one raising doesn't stop the other.
+    The state flips only after two updates in a row agree. On close the box goes back to
+    the tab it came from, unless the player pressed in the box since.
+    """
+
+    def __init__(self, box: Box, index: int):
+        self._box, self._index = box, index
+        self._open = False  # the settled state
+        self._last = False  # the latest update
+        self._back: int | None = None
+        self._touches = 0
+
+    def update(self, open_: bool) -> None:
+        agreed = open_ == self._last
+        self._last = open_
+        if not agreed or open_ == self._open:
+            return
+        self._open = open_
+        box = self._box
+        if open_:
+            if box.current != self._index:
+                self._back, self._touches = box.current, box.touches
+                box.select(self._index)
+        else:
+            if self._back is not None and box.touches == self._touches:
+                box.select(self._back)
+            self._back = None
+
+
+def update_tools(  # noqa: PLR0913, PLR0917 - one per tool plus the frame; a bundle would hide them
+    box: Box, exp, path, cls, quest, focus, reading, rect, now: float, seen: set[str]
+) -> None:
+    """Feed the tools the same reading; the Path tab shows a dot while a trip runs.
+
+    Each tool runs on its own: one raising doesn't stop the others.
     """
     try:
         exp.update(reading, rect, now)
@@ -143,7 +207,52 @@ def update_tools(  # noqa: PLR0913, PLR0917 - one per tool plus the frame; a bun
     except Exception as e:
         report_once(e, seen)
         path.arrow.hide()  # never leave it pointing from a stale spot
-    box.set_tab_dot(1, path.running)  # the Path tab's index in build_box's tools list
+    try:
+        cls.update(reading, rect, now)
+    except Exception as e:
+        report_once(e, seen)
+        cls.hide_marks()  # never leave marks from a tick that failed
+    try:
+        quest.update(reading, rect, now)
+    except Exception as e:
+        report_once(e, seen)  # it draws nothing on the layer: nothing to hide
+    focus.update(quest.open)
+    box.set_tab_dot(1, path.running)  # the tabs' indexes in build_box's tools list
+    box.set_tab_dot(2, cls.dot)
+
+
+def quest_go(path_tool, select):
+    """The Quests tab's go: if no trip starts, show the Path tab, which says why."""
+
+    def go(map_id: str, at=None, label=None) -> None:
+        path_tool.go(map_id, at, label)
+        if not path_tool.running:
+            select(1)
+
+    return go
+
+
+HELPER_CHECK_S = 20.0  # how long the build's self-check waits for the helper process
+
+
+def make_reader(platform: str) -> InlineReader | ProcessReader:
+    """macOS slows this app while the game is in front; a child process isn't slowed."""
+    return ProcessReader() if platform == "darwin" else InlineReader()
+
+
+def _helper_answers() -> bool:
+    """True if a helper process starts and answers (a frozen app that can't spawn fails here)."""
+    helper = ProcessReader(work=repr)  # never captures the screen
+    try:
+        helper.ask(0)
+        end = time.monotonic() + HELPER_CHECK_S
+        while time.monotonic() < end:
+            if (got := helper.take()) is not None:
+                return not isinstance(got, Exception)
+            time.sleep(0.05)
+        return False
+    finally:
+        helper.close()
 
 
 def self_check() -> int:
@@ -156,12 +265,17 @@ def self_check() -> int:
     try:
         glyphs.load_all()
         maps.load()
+        class_data.load()
+        quest_data.load()
+        quest_window.known_quest_names()
         pictures = sorted(maps.PICTURES.glob("*.png"))
         if not pictures or any(maps.picture(p.stem) is None for p in pictures):
             return 1
         if QImage(str(ICON)).isNull():  # missing, or no plugin to decode it
             return 1
         if not version("maplelens"):  # None when its metadata file is missing
+            return 1
+        if sys.platform == "darwin" and not _helper_answers():
             return 1
     except Exception:
         return 1
@@ -216,13 +330,17 @@ def downloading_notice(new: str) -> str:
 UPDATE_FAILED = f"Update failed: click {MENU_MARK}"  # the menu item tries again
 UP_TO_DATE = "MapleLens is up to date"  # "Check for updates now" replies
 COULDNT_CHECK = "Couldn't check for updates"
+MOVE_TO_APPLICATIONS = "Move to Applications to update"  # on the dmg or where it can't write
+ALLOW_UPDATES = f"Allow updates: click {MENU_MARK}"  # macOS's App Management blocked the swap
+ALLOW_UPDATES_ITEM = "Allow MapleLens to update…"
+APP_MANAGEMENT_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles"
 # About's updates line (UpdateCheck.status, about_line)
 CHECKING = "Checking…"
 CURRENT = "Up to date"
 FAILED_CHECK = "Couldn't check"
 CHECKS_OFF = "Automatic checks off"
 NOT_CHECKED = "Not checked yet"
-FROM_SOURCE = "Running from source"  # no update check: uv run maplelens, or the Mac
+FROM_SOURCE = "Running from source"  # no update check: uv run maplelens
 
 
 def update_available(new: str) -> str:
@@ -233,26 +351,36 @@ def _user_agent() -> dict[str, str]:
     return {"User-Agent": f"MapleLens/{version('maplelens')}"}  # nothing about the player
 
 
+MAC_CAS = "/etc/ssl/cert.pem"  # macOS's own CA list, on every Mac
+
+
+def _tls(platform: str = sys.platform) -> ssl.SSLContext:
+    """The Mac app's bundled OpenSSL looks for CAs in Homebrew's folder, which most Macs
+    don't have: there, trust macOS's list instead."""
+    return ssl.create_default_context(cafile=MAC_CAS if platform == "darwin" else None)
+
+
 def fetch_latest(repo: str = update.REPO) -> dict:
     """GitHub's latest release of `repo`, as JSON. Sends only MapleLens's version."""
     req = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/releases/latest",
         headers={**_user_agent(), "Accept": "application/vnd.github+json"},
     )
-    with urllib.request.urlopen(req, timeout=10) as reply:
+    with urllib.request.urlopen(req, timeout=10, context=_tls()) as reply:
         return json.load(reply)
 
 
 def download_file(url: str, dest: Path) -> None:
     """Save `url` to `dest`. The timeout is per read, so a 60 MB setup can take its time."""
     req = urllib.request.Request(url, headers=_user_agent())
-    with urllib.request.urlopen(req, timeout=30) as reply, dest.open("wb") as f:
+    with urllib.request.urlopen(req, timeout=30, context=_tls()) as reply, dest.open("wb") as f:
         shutil.copyfileobj(reply, f)
 
 
 def clear_updates(folder: Path) -> None:
-    """Delete setups left from earlier updates. One still running stays until next time."""
-    for old in folder.glob("MapleLens-Setup-*"):
+    """Delete setups and dmgs left from earlier updates (the Mac helper's result stays).
+    One still in use stays until next time."""
+    for old in folder.glob("MapleLens-*"):
         with contextlib.suppress(OSError):
             old.unlink()
 
@@ -283,10 +411,15 @@ class UpdateCheck:
         folder: Path,
         download: Callable[[str, Path], None] = download_file,
         install: Callable[[Path], None] = install_update,
+        platform: str = sys.platform,
+        can_install: Callable[[], str | None] = lambda: None,  # a line when this copy can't
     ):
         self._box, self._settings, self._save = box, settings, save
         self._fetch, self._running, self._seen = fetch, running, seen
         self._folder, self._download, self._install = folder, download, install
+        self._platform, self._can_install = platform, can_install
+        self._now = now  # the last poll's, for a click's reply timer
+        self._held = False  # show_result's line stays until it's closed or replaced
         self._due = now + self.FIRST_S
         self._thread: threading.Thread | None = None
         self._result: tuple[dict | None, Exception | None] = (None, None)
@@ -299,6 +432,7 @@ class UpdateCheck:
         self._last: str | None = None  # the last check's outcome, for status()
 
     def poll(self, now: float) -> None:
+        self._now = now
         if self._quiet_at is not None and now >= self._quiet_at:
             self._say(None)
         if self._download_thread is not None and not self._download_thread.is_alive():
@@ -314,7 +448,7 @@ class UpdateCheck:
                 if manual:
                     self._reply(COULDNT_CHECK, now)
             else:
-                self._found(update.parse_latest(reply), manual, now)
+                self._found(update.parse_latest(reply, self._platform), manual, now)
         automatic = self._settings.get("update_check", True)  # the toggle, read each time
         if self._thread is None and now >= self._due and automatic:
             self._due = now + self.EVERY_S
@@ -335,6 +469,23 @@ class UpdateCheck:
         self._manual = True
         if self._thread is None:  # else the request already running gives the reply
             self._start()
+
+    def show_result(self, result: str | None) -> None:
+        """What the Mac helper left from the last update: "blocked" asks the player to allow
+        updates, anything else says it failed. Logged either way: the helper has no log."""
+        if result is None:
+            return
+        report_once(RuntimeError(f"the last update didn't finish: {result}"), self._seen)
+        if result == "blocked":
+            self._box.add_menu_item(
+                ALLOW_UPDATES_ITEM,
+                lambda: QDesktopServices.openUrl(QUrl(APP_MANAGEMENT_URL)),
+                at=-1,
+            )
+            self._say(ALLOW_UPDATES, lambda: self._say(None))
+        else:
+            self._say(UPDATE_FAILED, lambda: self._say(None))
+        self._held = True
 
     def set_auto(self, on: bool) -> None:
         """The "Check for updates automatically" toggle."""
@@ -361,6 +512,7 @@ class UpdateCheck:
     def _say(self, text: str | None, on_dismiss=None, *, until: float | None = None) -> None:
         self._box.set_notice(text, on_dismiss)
         self._quiet_at = until
+        self._held = False
 
     def _reply(self, text: str, now: float) -> None:
         if self._download_thread is None:  # the "Downloading…" line stays until it ends
@@ -380,7 +532,7 @@ class UpdateCheck:
             self._item.setText(label)
         downloading = self._download_thread is not None  # its line stays until it ends
         asked = manual or self._settings.get("update_dismissed") != release.version
-        if not downloading and asked:
+        if not downloading and asked and (manual or not self._held):
             self._say(update_notice(release.version), lambda: self._dismiss(release.version))
 
     def _dismiss(self, new: str) -> None:
@@ -391,6 +543,9 @@ class UpdateCheck:
         """The menu item's click: download the setup; poll() hands over once it's checked."""
         if self.release is None or self._download_thread is not None:
             return  # a second click while downloading does nothing
+        if (line := self._can_install()) is not None:
+            self._reply(line, self._now)
+            return
         self._say(downloading_notice(self.release.version))
         self._got = (None, None)
         self._download_thread = threading.Thread(
@@ -399,7 +554,7 @@ class UpdateCheck:
         self._download_thread.start()
 
     def _get(self, release: update.Release) -> None:  # on the download's own thread: no Qt
-        setup = self._folder / f"MapleLens-Setup-{release.version}.exe"
+        setup = self._folder / update.asset_name(release.version, self._platform)
         part = setup.with_name(setup.name + ".part")  # renamed only once its digest matches
         try:
             if release.digest is None:
@@ -437,28 +592,53 @@ def update_check(  # noqa: PLR0913, PLR0917 - main's parts, plus the fetch tests
     now: float,
     fetch: Callable[[], dict] = fetch_latest,
 ) -> UpdateCheck | None:
-    """An UpdateCheck for the installed Windows app, with its two menu items; else None.
+    """An UpdateCheck for the installed app (Windows or Mac), with its two menu items;
+    else None.
 
-    Keep the result: Qt holds the menu items' links to it weakly. Clears the setups
-    earlier updates left in the data folder's `updates`.
+    Keep the result: Qt holds the menu items' links to it weakly. Clears the setups and
+    dmgs earlier updates left in the data folder's `updates`; on the Mac also shows what
+    the last update's helper left there.
     """
     if not update.can_update(getattr(sys, "frozen", False), sys.platform):
         return None
     folder = data_dir() / "updates"
     clear_updates(folder)
-    check = UpdateCheck(box, settings, save, fetch, version("maplelens"), seen, now, folder=folder)
+    mac = {}
+    if sys.platform == "darwin":
+        mac = {
+            "install": update_mac.install_update,
+            "can_install": lambda: (
+                None
+                if (b := update_mac.bundle_path(sys.executable)) and update_mac.can_replace(b)
+                else MOVE_TO_APPLICATIONS
+            ),
+        }
+    check = UpdateCheck(
+        box,
+        settings,
+        save,
+        fetch,
+        version("maplelens"),
+        seen,
+        now,
+        folder=folder,
+        platform=sys.platform,
+        **mac,
+    )
     box.add_menu_item("Check for updates now", check.check_now, at=-1)  # above Quit
     auto = settings.get("update_check", True)
     box.add_toggle("Check for updates automatically", auto, check.set_auto, at=-1)
+    if sys.platform == "darwin":
+        check.show_result(update_mac.read_result(folder))
     return check
 
 
 def tray_available() -> bool:
-    """A tray icon on Windows, when there's a notification area to put it in.
+    """A tray icon: in the notification area on Windows, the menu bar on the Mac.
 
-    Not on the Mac (Windows only for now), and with no tray the box's ••• still works.
+    Not elsewhere, and with no tray the box's ••• still works.
     """
-    return sys.platform == "win32" and QSystemTrayIcon.isSystemTrayAvailable()
+    return sys.platform in ("win32", "darwin") and QSystemTrayIcon.isSystemTrayAvailable()
 
 
 def make_tray(
@@ -475,11 +655,16 @@ def make_tray(
         return None
     tray = tray_cls(QIcon(str(icon)), box)
     tray.setToolTip(APP_NAME)
-    menu = QMenu(box)
-    box.attach_menu(menu)
-    tray.setContextMenu(menu)
+    tray.setContextMenu(box_menu(box))
     tray.show()
     return tray
+
+
+def box_menu(box: Box) -> QMenu:
+    """A menu of the box's own items, read again each time it opens: the tray's."""
+    menu = QMenu(box)
+    box.attach_menu(menu)
+    return menu
 
 
 HIDE, SHOW = f"Hide {APP_NAME}", f"Show {APP_NAME}"
@@ -508,10 +693,11 @@ class Shown:
             self.item.setText(HIDE if self.on else SHOW)
 
 
-def add_hide(box: Box, layer: Layer, tray: QSystemTrayIcon | None) -> Shown:
-    """Hide / Show: a menu item just before Quit, and a left click on the tray icon.
-
-    Only with a tray icon: without one, a hidden box would leave no way back.
+def add_hide(box: Box, layer: Layer, tray: QSystemTrayIcon | None, *, click: bool = True) -> Shown:
+    """Hide / Show: a menu item just before Quit; the tray's menu has it, so the tray is
+    the way back. With `click` (Windows) a left click on the tray icon toggles too; on the
+    Mac a click opens the menu instead. With no tray there's no item: a hidden box would
+    stay hidden.
     """
     shown = Shown(box, layer)
     if tray is None:
@@ -522,7 +708,8 @@ def add_hide(box: Box, layer: Layer, tray: QSystemTrayIcon | None) -> Shown:
             shown.toggle()
 
     shown.item = box.add_menu_item(HIDE, shown.toggle, at=-1)
-    tray.activated.connect(clicked)
+    if click:
+        tray.activated.connect(clicked)
     return shown
 
 
@@ -535,6 +722,22 @@ def about_line(updates: "UpdateCheck | None") -> tuple[str, bool]:
     return text, release is not None and text == update_available(release.version)
 
 
+def add_build_menu(box: Box, tool) -> QAction:
+    """The class tool's build choice, above Quit: "Build: <name>", shown when there's a choice.
+
+    `tool` has build_names(), build_name(), pick_build(name) and a builds_changed hook.
+    """
+    action = box.add_submenu("Build", tool.build_names, tool.pick_build, at=-1)
+    action.setVisible(False)
+
+    def follow() -> None:
+        action.setText(f"Build: {tool.build_name()}")
+        action.setVisible(bool(tool.build_names()))
+
+    tool.builds_changed = follow
+    return action
+
+
 def add_about(box: Box, updates: "UpdateCheck | None") -> None:
     """The About item, just before Quit: the version, updates and the GitHub page.
 
@@ -543,7 +746,7 @@ def add_about(box: Box, updates: "UpdateCheck | None") -> None:
 
     def show() -> None:
         text, accent = about_line(updates)
-        url = f"https://github.com/{update.REPO}"  # the repo the update check asks
+        url = f"https://github.com/{update.HOME_REPO}"
         box.show_about(version("maplelens"), text, url, accent=accent)
 
     box.add_menu_item(ABOUT, show, at=-1)
@@ -562,47 +765,122 @@ class Tick:
     layer: Layer
     exp: ExpMeterTool
     path: PathArrowTool
+    cls: ClassHelperTool
+    quest: QuestHelperTool
+    focus: QuestFocus
     updates: "UpdateCheck | None"
     seen: set[str]  # error types/messages already logged
     shown: Shown
     hwnd: int | None = None
+    turn: int = 0  # ticks that tried to read a frame: whose turn it is (readers.due)
+    seen_at: dict[str, int] = field(default_factory=dict)  # part -> turn it was last on screen
+    reader: InlineReader | ProcessReader = field(default_factory=InlineReader)
+    bars: tuple[int, ...] | None = None  # (w, h, dx, dy, dw, dh): the last fullscreen bar cut
+
+    def picture(self, rect: Rect, cut: Rect | None = None) -> Rect:
+        """The game's picture in window `rect`: `cut`, an answer's, when it left out bars;
+        else the last cut for a window this size. A loading screen has no bars to see, so
+        without this the box would jump to the window's corner and back on a map change.
+        """
+        x, y, w, h = rect
+        if cut is not None and cut[2:] != rect[2:]:
+            self.bars = (w, h, cut[0] - x, cut[1] - y, *cut[2:])
+        if self.bars is None or self.bars[:2] != (w, h):
+            return rect
+        _, _, dx, dy, dw, dh = self.bars
+        return x + dx, y + dy, dw, dh
+
+    def remember(self, got, turn: int) -> None:
+        """Note which windows a reading answer saw, as of the turn of the job it answers."""
+        if got is not None and not isinstance(got, Exception):
+            for p in found(got[1]):
+                self.seen_at[p] = turn
 
     def run(self, now: float) -> None:
         poll_updates(self.updates, now, self.seen)  # before the game lookup: shows with no game
         if self.box.about_open:  # its updates line follows the check
             text, accent = about_line(self.updates)
             self.box.set_about_updates(text, accent=accent)
-        self.hwnd = self.hwnd or find_game(self.settings, self.save)
-        self.box.set_status(None if self.hwnd else LOOKING)  # a minimized game isn't "looking"
+        allowed = capture.has_access()  # each tick: it can be revoked or granted while we run
+        self.hwnd = (self.hwnd or find_game(self.settings, self.save)) if allowed else None
+        self.box.set_status(screen_status(allowed, self.hwnd))  # a minimized game isn't "looking"
         rect = capture.client_rect(self.hwnd) if self.hwnd else None
         if rect is None:
             self.hwnd = None  # gone or minimized: look again next tick
             self.layer.hide()
-            update_tools(self.box, self.exp, self.path, None, None, now, self.seen)
+            update_tools(
+                self.box,
+                self.exp,
+                self.path,
+                self.cls,
+                self.quest,
+                self.focus,
+                None,
+                None,
+                now,
+                self.seen,
+            )
             return
+        try:
+            # take first: what the last job saw makes this job's `due` (InlineReader has nothing
+            # to give yet; its answer comes from the second take)
+            got = self.reader.take()
+            self.remember(got, self.turn - 1)
+            self.reader.ask((self.hwnd, rect, now, due(self.turn, self.seen_at)))
+            if got is None:
+                got = self.reader.take()
+                self.remember(got, self.turn)
+        except Exception as e:  # a bad tick counts as no reading; the box still follows the game
+            got = e
+        self.turn += 1  # bad ticks too: the turns keep going
+        if got is None:  # no answer yet: follow the game, leave the tools alone
+            rect = self.picture(rect)
+            self.layer.follow(rect)
+            if self.shown.on:
+                self.layer.show()
+            self.box.place(rect)
+            return
+        if isinstance(got, Exception):
+            report_once(got, self.seen)
+            reading = None
+            rect = self.picture(rect)
+        else:
+            cut, reading = got  # the picture without any fullscreen black bars
+            rect = self.picture(rect, cut)
         self.layer.follow(rect)
         if self.shown.on:  # hidden by the player: the tools still run, nothing shows
             self.layer.show()
-        try:
-            reading = read_all(capture.grab(self.hwnd, rect), now)
-        except Exception as e:  # a bad tick counts as no reading; the box still follows the game
-            report_once(e, self.seen)
-            reading = None
-        update_tools(self.box, self.exp, self.path, reading, rect, now, self.seen)
+        update_tools(
+            self.box,
+            self.exp,
+            self.path,
+            self.cls,
+            self.quest,
+            self.focus,
+            reading,
+            rect,
+            now,
+            self.seen,
+        )
         self.box.place(rect)
 
 
+def hide_from_dock() -> None:
+    """Mac: no Dock icon, only the menu bar's (make_tray), even run from source."""
+    from maplelens import overlay_mac  # AppKit only exists on the Mac
+
+    overlay_mac.make_accessory()
+
+
 def _start_qt() -> QApplication:
-    """The QApplication, started so that it never takes the front from the game."""
-    if sys.platform == "darwin":  # Qt must never bring MapleLens to the front over the game
-        os.environ.setdefault("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", "1")
+    """The QApplication, started so that it never takes the front from the game itself:
+    only the player's click on one of its windows brings MapleLens forward."""
+    if sys.platform == "darwin":  # Qt raises a starting app over the others unless told not
         os.environ.setdefault("QT_MAC_SET_RAISE_PROCESS", "0")
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     if sys.platform == "darwin":
-        from maplelens import overlay_mac
-
-        overlay_mac.make_accessory()
+        hide_from_dock()
         app.processEvents()  # finish launching first: a window shown before that activates us
     return app
 
@@ -625,12 +903,11 @@ def early_exit() -> int | None:
 
 
 def main() -> int:
+    multiprocessing.freeze_support()  # a spawned child of the frozen app runs here, then exits
     if (code := early_exit()) is not None:
         return code
     app = _start_qt()
     capture.set_dpi_aware()
-    if not capture.ensure_access():
-        return 1
     start_log(data_dir() / "maplelens.log")
     path = data_dir() / "settings.json"
     settings = load_settings(path)
@@ -639,7 +916,9 @@ def main() -> int:
     def save() -> None:
         save_settings(path, settings)
 
-    tool = ExpMeterTool(settings, open_db(data_dir() / "maplelens.db"))
+    conn = open_db(data_dir() / "maplelens.db")
+    cls_data = class_data.load()
+    tool = ExpMeterTool(settings, conn, cls_data.line)
     # the lambda defers the lookup: `box` is built from path_tool on the next line
     path_tool = PathArrowTool(settings, save, layer, lambda on: box.allow_typing(on))  # noqa: PLW0108
     seen: set[str] = set()  # error types/messages already logged
@@ -648,16 +927,48 @@ def main() -> int:
         choose_window(settings, save, title)
         tick.hwnd = None  # the next tick finds the chosen window
 
-    box = build_box(settings, save, [tool, path_tool], pick)
+    def go(map_id: str) -> None:
+        path_tool.go(map_id)
+        box.select(1)
+
+    cls_tool = ClassHelperTool(settings, save, layer, go, lambda t: best_rate(conn, t), cls_data)
+    quest_tool = QuestHelperTool(
+        settings,
+        save,
+        quest_go(path_tool, lambda i: box.select(i)),  # noqa: PLW0108 - box is built next
+        path_tool.heading,
+        path_tool.stop,
+        path_tool.hops,
+    )  # its go stays on the Quests tab while a trip runs
+    box = build_box(settings, save, [tool, path_tool, cls_tool, quest_tool], pick)
+    setup_screen_recording(box)
+    add_build_menu(box, cls_tool)
+    box.add_toggle(MARKS, settings["class_marks"], cls_tool.set_marks, at=-1)
     updates = update_check(box, settings, save, seen, time.time())
     tray = make_tray(box, ICON, available=tray_available())  # held, or it leaves the tray
-    shown = add_hide(box, layer, tray)
+    shown = add_hide(box, layer, tray, click=sys.platform == "win32")
     add_about(box, updates)  # after Hide: just before Quit
-    tick = Tick(settings, save, box, layer, tool, path_tool, updates, seen, shown)
+    reader = make_reader(sys.platform)
+    tick = Tick(
+        settings,
+        save,
+        box,
+        layer,
+        tool,
+        path_tool,
+        cls_tool,
+        quest_tool,
+        QuestFocus(box, 3),
+        updates,
+        seen,
+        shown,
+        reader=reader,
+    )
     timer = QTimer()
     timer.timeout.connect(lambda: tick.run(time.time()))
     timer.start(_TICK_MS)
     app.aboutToQuit.connect(lambda: tool.shutdown(time.time()))
+    app.aboutToQuit.connect(reader.close)
     return app.exec()
 
 

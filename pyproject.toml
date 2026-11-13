@@ -1,6 +1,6 @@
 [project]
 name = "maplelens"
-version = "0.2.0"
+version = "0.6.2"
 description = "Screen-reading-only overlay for MapleStory Classic."
 readme = "README.md"
 license = "MIT"

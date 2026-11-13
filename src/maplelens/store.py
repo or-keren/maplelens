@@ -11,9 +11,16 @@ DEFAULTS = {
     "idle_cutoff_s": 90,
     "jump_factor": 5,
     "boxes": {},
+    "tab_width": None,  # the box's tabs, once the player has dragged its corner
     "path_taxi": True,
+    "class_builds": {},  # job -> the build name picked in the Class tab
+    "class_marks": True,  # the AP/SP marks on the game's stat and skill windows
     "update_check": True,  # the installed Windows app asks GitHub for new versions
     "update_dismissed": None,  # the version whose notice line the player closed
+    "quests_tracked": [],  # quest ids, in tracking order
+    "quests_followed": [],  # quest ids seen in the game's Quest Helper; they leave with it
+    "quests_expanded": None,  # the tracked quest shown open in the Quests tab
+    "quests_closest": {},  # quest id (as text) -> True: Closest, False: Best; once switched
 }
 
 

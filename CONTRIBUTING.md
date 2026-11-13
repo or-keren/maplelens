@@ -69,6 +69,45 @@ It writes `dist\MapleLens-Setup-X.Y.Z.exe` and fails if the app is missing data 
 `MapleLens.exe --self-check` fails. You don't need it for a pull request; the release
 workflow builds the installer itself.
 
+## Mac signing certificate (once)
+
+The Mac build is signed with a self-signed certificate, so macOS keeps a player's Screen
+Recording permission across updates. Make it once, as the repo owner:
+
+```
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -subj "/CN=MapleLens Release" \
+  -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning" \
+  -keyout key.pem -out cert.pem
+/usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem -out maplelens-sign.p12
+base64 -i maplelens-sign.p12 | gh secret set MAC_SIGN_P12_BASE64
+gh secret set MAC_SIGN_P12_PASSWORD     # the export password you typed
+```
+
+This is the macOS system `openssl` (LibreSSL), whose `.p12` `security import` accepts; no Homebrew needed.
+Keep `maplelens-sign.p12` and its password in an offline backup, then delete `key.pem`, `cert.pem` and the loose `.p12`.
+Lose them and the next release is signed with a new certificate, which costs every player
+one Screen Recording re-grant. The release workflow's Mac signing job fails until both
+secrets are set.
+
+The bundle id `io.github.or-keren.maplelens` must never change after the first Mac
+release, for the same reason.
+
+## Building the Mac dmg
+
+On the Mac, the build makes the dmg for the Mac it runs on:
+
+```
+uv run --group build python scripts/build_installer.py   # writes dist/MapleLens-X.Y.Z.dmg
+```
+
+That's `MapleLens-X.Y.Z.dmg` on Apple silicon and `MapleLens-X.Y.Z-intel.dmg` on Intel. A
+release has both: the release workflow builds one on each kind of runner (`macos-latest`,
+`macos-15-intel`), since numpy and OpenCV publish no universal2 wheels to make one app for
+both. The installed app updates from its own CPU's dmg (`maplelens.update.asset_name`).
+
+Without `MAPLELENS_SIGN_IDENTITY` the app is signed ad-hoc, fine for trying it locally.
+The stages can run alone: `--freeze-only`, `--sign-only`, `--dmg-only`.
+
 ## Testing an update
 
 The installed app asks `or-keren/maplelens` for its latest release. Point it at your

@@ -32,6 +32,34 @@ def test_box_tabs_switch(monkeypatch):
     assert b.isVisibleTo(box) and not a.isVisibleTo(box)
 
 
+def test_a_hidden_tall_tab_never_stretches_the_current_one(monkeypatch):
+    """Wrapped text on the current tab once sized it by the tallest tab, hidden ones too."""
+    from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+    def page(text):
+        p = QWidget()
+        p.setFixedWidth(overlay.TAB_W)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        QVBoxLayout(p).addWidget(label)
+        return p, label
+
+    def settle():
+        for _ in range(20):
+            QApplication.processEvents()
+
+    box = _box(monkeypatch)
+    current, line = page("Not in the map list yet, so no route from here")
+    line.hide()
+    box.add_tab("A", current)
+    box.add_tab("B", page("word " * 120)[0])
+    box.show()
+    settle()
+    line.show()  # the current tab's first wrapped line
+    settle()
+    assert current.height() == current.heightForWidth(overlay.TAB_W)
+
+
 def test_tab_dot(monkeypatch):
     from PySide6.QtWidgets import QLabel
 
@@ -172,7 +200,8 @@ def test_notice_stays_while_the_status_line_shows(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "which", ["update", "downloading", "failed", "up to date", "couldn't check"]
+    "which",
+    ["update", "downloading", "failed", "up to date", "couldn't check", "move", "allow"],
 )
 def test_notice_fits_the_tab_width_at_the_longest_version(monkeypatch, which):
     from maplelens import app
@@ -183,6 +212,8 @@ def test_notice_fits_the_tab_width_at_the_longest_version(monkeypatch, which):
         "failed": app.UPDATE_FAILED,
         "up to date": app.UP_TO_DATE,
         "couldn't check": app.COULDNT_CHECK,
+        "move": app.MOVE_TO_APPLICATIONS,
+        "allow": app.ALLOW_UPDATES,
     }[which]
     box = _box(monkeypatch)
     box.set_notice(text, lambda: None)
@@ -437,3 +468,280 @@ def test_about_at_the_longest_version_keeps_the_box_width(monkeypatch):
     box.adjustSize()
     assert box._about.sizeHint().width() <= overlay.TAB_W
     assert box.width() == width
+
+
+def test_buttons_have_kinds_and_never_take_focus(monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from maplelens.overlay import primary_button, secondary_button
+
+    _box(monkeypatch)  # the app
+    hits = []
+    p = primary_button("Start", lambda: hits.append("p"))
+    s = secondary_button("Stop", lambda: hits.append("s"))
+    assert (p.property("kind"), s.property("kind")) == ("primary", "secondary")
+    assert p.focusPolicy() == s.focusPolicy() == Qt.NoFocus
+    p.click()
+    s.click()
+    assert hits == ["p", "s"]
+
+
+def test_info_line_text_and_height(monkeypatch):
+    from maplelens.overlay import LABEL_COLOR, LABEL_PT, InfoLine, text_label
+
+    _box(monkeypatch)
+    line = InfoLine()
+    line.setText("No route")  # short: offscreen fonts are wide, and a wrap isn't the point
+    assert line.text() == "No route"
+    plain = text_label("No route", LABEL_PT, LABEL_COLOR)
+    assert line.sizeHint().height() <= plain.sizeHint().height() + 2  # no taller fallback font
+
+
+def test_add_submenu_returns_its_action_and_can_go_before_an_item(monkeypatch):
+    box = _box(monkeypatch)
+    box.add_menu_item("Quit", lambda: None)
+    action = box.add_submenu("Pick", lambda: ["a"], lambda t: None, at=-1)
+    assert action.text() == "Pick"
+    assert [a.text() for a in box.actions()] == ["Pick", "Quit"]
+
+
+def test_a_tab_with_a_wide_hint_keeps_the_box_width(monkeypatch):
+    from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+    box = _box(monkeypatch)
+    tab = QWidget()
+    tab.setFixedWidth(overlay.TAB_W)  # every tab is this wide; its wrapped text hints wider
+    text = QLabel("a long line that wraps " * 20)
+    text.setWordWrap(True)
+    QVBoxLayout(tab).addWidget(text)
+    box.add_tab("A", tab)
+    box.show()  # a shown box's pages size from their raw hints
+    box.adjustSize()
+    assert box.width() == overlay.TAB_W + 24  # the box's 12 px side margins
+
+
+@pytest.mark.parametrize(
+    ("saved", "width"),
+    [
+        (None, overlay.TAB_W),
+        ("wide", overlay.TAB_W),  # a hand-edited settings file
+        (True, overlay.TAB_W),
+        (50, overlay.TAB_W),
+        (300, 300),
+        (9999, overlay.MAX_TAB_W),
+    ],
+)
+def test_a_saved_tab_width_is_kept_within_the_limits(saved, width):
+    assert overlay.fit_tab_w(saved) == width
+
+
+def _resizable(monkeypatch, settings=None):
+    from PySide6.QtWidgets import QLabel
+
+    from maplelens.overlay import Box
+
+    _box(monkeypatch)  # the app
+    saves = []
+    box = Box("t", {} if settings is None else settings, lambda: saves.append(1))
+    box.add_tab("A", QLabel("page"))
+    box.show()
+    _settle()
+    return box, saves
+
+
+def _settle():
+    from PySide6.QtWidgets import QApplication
+
+    for _ in range(20):
+        QApplication.processEvents()
+
+
+class _GripDrag:
+    """The player's drag of the box's corner handle, by global position as the mouse moves."""
+
+    def __init__(self, box):
+        from PySide6.QtCore import QPointF
+
+        self.grip = box._grip
+        self.start = QPointF(self.grip.mapToGlobal(self.grip.rect().center()))
+
+    def _send(self, kind, dx, button, buttons):
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+
+        at = self.start + QPointF(dx, 0)
+        local = self.grip.mapFromGlobal(at)
+        QApplication.sendEvent(
+            self.grip, QMouseEvent(kind, local, at, button, buttons, Qt.NoModifier)
+        )
+
+    def press(self):
+        from PySide6.QtCore import QEvent, Qt
+
+        self._send(QEvent.MouseButtonPress, 0, Qt.LeftButton, Qt.LeftButton)
+
+    def move(self, dx):
+        from PySide6.QtCore import QEvent, Qt
+
+        self._send(QEvent.MouseMove, dx, Qt.NoButton, Qt.LeftButton)
+        _settle()
+
+    def release(self, dx):
+        from PySide6.QtCore import QEvent, Qt
+
+        self._send(QEvent.MouseButtonRelease, dx, Qt.LeftButton, Qt.NoButton)
+        _settle()
+
+
+def test_dragging_the_grip_widens_the_box_and_saves_once_on_release(monkeypatch):
+    settings = {}
+    box, saves = _resizable(monkeypatch, settings)
+    before = box.width()
+    drag = _GripDrag(box)
+    drag.press()
+    drag.move(60)
+    drag.move(100)
+    assert box.width() == before + 100
+    assert saves == []  # no disk write per mouse move
+    drag.release(100)
+    assert saves == [1]
+    assert settings["tab_width"] == overlay.TAB_W + 100
+
+
+@pytest.mark.parametrize(
+    ("dx", "tab_w"), [(-80, overlay.TAB_W), (9999, overlay.MAX_TAB_W)], ids=["min", "max"]
+)
+def test_the_grip_stops_at_the_width_limits(monkeypatch, dx, tab_w):
+    box, _ = _resizable(monkeypatch)
+    drag = _GripDrag(box)
+    drag.press()
+    drag.move(dx)
+    drag.release(dx)
+    assert box.width() == tab_w + 24  # the box's 12 px side margins
+
+
+def test_a_saved_width_is_used_from_the_start(monkeypatch):
+    box, _ = _resizable(monkeypatch, {"tab_width": 300})
+    assert box.width() == 300 + 24
+
+
+def test_the_grip_keeps_to_the_bottom_right_corner_clear_of_the_content(monkeypatch):
+    box, _ = _resizable(monkeypatch)
+    drag = _GripDrag(box)
+    drag.press()
+    drag.move(80)
+    drag.release(80)
+    grip = box._grip.geometry()
+    assert (grip.right(), grip.bottom()) == (box.width() - 1, box.height() - 1)
+    assert grip.left() > box._pages.geometry().right()
+
+
+def test_grabbing_the_grip_never_drags_the_box(monkeypatch):
+    box, _ = _resizable(monkeypatch)
+    box.move(400, 300)
+    drag = _GripDrag(box)
+    drag.press()
+    drag.move(50)
+    assert box._drag_from is None
+    assert box.pos().x() == 400 and box.pos().y() == 300
+    drag.release(50)
+
+
+def test_a_box_at_its_default_spot_stays_put_while_and_after_resizing(monkeypatch):
+    """The default spot hangs from the box's right edge, so it would slide from under the mouse."""
+    box, _ = _resizable(monkeypatch)
+    game = (0, 0, 1366, 768)
+    box.place(game)
+    spot = box.pos()
+    drag = _GripDrag(box)
+    drag.press()
+    drag.move(100)
+    box.place(game)  # the tick, every 500 ms
+    assert box.pos() == spot
+    drag.release(100)
+    box.place(game)
+    assert box.pos() == spot
+
+
+def test_the_grip_hides_with_the_tabs(monkeypatch):
+    """The status line sets its own width, so there is nothing for a drag to change."""
+    box, _ = _resizable(monkeypatch)
+    assert box._grip.isVisibleTo(box)
+    box.set_status("Looking for the game")
+    assert not box._grip.isVisibleTo(box)
+    box.set_status(None)
+    assert box._grip.isVisibleTo(box)
+
+
+def test_width_listeners_hear_the_current_width_and_each_change(monkeypatch):
+    box, _ = _resizable(monkeypatch, {"tab_width": 250})
+    heard = []
+    box.on_tab_w(heard.append)
+    assert heard == [250]
+    box.set_tab_w(300)
+    box.set_tab_w(300)  # no change, nothing to tell
+    assert heard == [250, 300]
+
+
+def test_about_follows_the_width(monkeypatch):
+    box, _ = _resizable(monkeypatch, {"tab_width": 300})
+    box.show_about("0.1.0", "Up to date", URL)
+    _settle()
+    assert box.width() == 300 + 24
+
+
+def test_wrapped_text_takes_fewer_lines_in_a_wider_box(monkeypatch):
+    from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+    box, _ = _resizable(monkeypatch)
+    tab = QWidget()
+    tab.setFixedWidth(overlay.TAB_W)
+    text = QLabel("a long line that wraps " * 8)
+    text.setWordWrap(True)
+    QVBoxLayout(tab).addWidget(text)
+    box.select(box.add_tab("B", tab))
+    box.on_tab_w(tab.setFixedWidth)
+    _settle()
+    narrow = box.height()
+    box.set_tab_w(overlay.MAX_TAB_W)
+    _settle()
+    assert box.height() < narrow
+    box.set_tab_w(overlay.TAB_W)
+    _settle()
+    assert box.height() == narrow
+
+
+def test_four_tabs_and_a_dot_fit(monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    box = _box(monkeypatch)
+    for title in ("EXP", "Path", "Class", "Quests"):
+        page = QWidget()
+        page.setFixedWidth(overlay.TAB_W)
+        box.add_tab(title, page)
+    box.set_tab_dot(1, True)
+    box.adjustSize()
+    assert box.width() == overlay.TAB_W + 24
+
+
+def test_current_and_touches(monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    box = _box(monkeypatch)
+    page = QWidget()
+    page.setFixedWidth(overlay.TAB_W)
+    row = overlay.Row("name", "sub", lambda: None)
+    QVBoxLayout(page).addWidget(row)
+    for title, p in (("A", page), ("B", QWidget()), ("C", QWidget())):
+        box.add_tab(title, p)
+    box.show()
+    assert box.current == 0
+    box.select(2)
+    assert (box.current, box.touches) == (2, 0)
+    QTest.mouseClick(box._tab_buttons[0], Qt.LeftButton)
+    assert (box.current, box.touches) == (0, 1)
+    QTest.mouseClick(row, Qt.LeftButton)
+    assert box.touches == 2

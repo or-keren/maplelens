@@ -6,11 +6,14 @@ reads the reply, compares versions and checks the downloaded file's digest.
 
 import hashlib
 import os
+import platform as _platform
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO = os.environ.get("MAPLELENS_UPDATE_REPO") or "or-keren/maplelens"
+HOME_REPO = "or-keren/maplelens"  # the project's own page; never follows the override
+REPO = os.environ.get("MAPLELENS_UPDATE_REPO") or HOME_REPO
 
 _VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 
@@ -18,7 +21,7 @@ _VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 @dataclass(frozen=True)
 class Release:
     version: str  # "X.Y.Z", without the "v"
-    url: str  # the setup exe's browser_download_url
+    url: str  # the platform's asset's browser_download_url
     digest: str | None  # "sha256:<hex>" as GitHub gives it; None means it can't be verified
 
 
@@ -27,19 +30,30 @@ def _version(text) -> tuple[int, int, int] | None:
     return tuple(int(g) for g in m.groups()) if m else None
 
 
-def parse_latest(reply) -> Release | None:
-    """A `releases/latest` reply -> its setup exe, or None when there's nothing to offer."""
+def asset_name(version: str, platform: str, machine: str | None = None) -> str:
+    """The release file this copy installs. The Mac has one dmg per CPU: Apple silicon's
+    keeps the plain name the first Mac releases used, so their copies still find it."""
+    if platform != "darwin":
+        return f"MapleLens-Setup-{version}.exe"
+    machine = machine or _platform.machine()
+    return f"MapleLens-{version}-intel.dmg" if machine == "x86_64" else f"MapleLens-{version}.dmg"
+
+
+def parse_latest(reply, platform: str | None = None, machine: str | None = None) -> Release | None:
+    """A `releases/latest` reply -> this platform's asset, or None when there's nothing to offer."""
+    platform = platform or sys.platform
     if not isinstance(reply, dict):
         return None
     tag = reply.get("tag_name")
     if not isinstance(tag, str) or not tag.startswith("v") or _version(tag[1:]) is None:
         return None
     version = tag[1:]
+    want = asset_name(version, platform, machine)
     assets = reply.get("assets")
     if not isinstance(assets, list):
         return None
     for asset in assets:
-        if not isinstance(asset, dict) or asset.get("name") != f"MapleLens-Setup-{version}.exe":
+        if not isinstance(asset, dict) or asset.get("name") != want:
             continue
         url = asset.get("browser_download_url")
         if not isinstance(url, str):
@@ -70,5 +84,5 @@ def digest_ok(path: Path, digest) -> bool:
 
 
 def can_update(frozen: bool, platform: str) -> bool:
-    """Only the installed Windows app updates itself: source runs and the Mac never ask."""
-    return bool(frozen) and platform == "win32"
+    """Only the installed app (Windows or Mac) updates itself: source runs never ask."""
+    return bool(frozen) and platform in ("win32", "darwin")
