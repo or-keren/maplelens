@@ -116,6 +116,8 @@ EXPECTED_POS = {
     "pos_fne_mid_1366x768_100.png": (0.515, 0.446),  # a monster shows through the minimap
     "pos_fne_top_1366x768_100.png": (0.485, 0.295),
     "pos_tunnel_2560x1440_100.png": (0.493, 0.446),  # Tree Tunnel; a dot painted out
+    # Henesys, Mac fullscreen (1.107x, blurred): the dot is a yellow roof's size there
+    "pos_henesys_3024x1700_100.png": (0.503, 0.693),
     "pos_bar_2560x1440_100.png": None,  # minimap minimized to its bar
     "pos_covered_2560x1440_100.png": None,  # inventory window over the map area
     "pos_nominimap_1920x1080_100.png": None,  # game scene, no minimap

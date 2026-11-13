@@ -282,3 +282,11 @@ def test_player_world_tree_tunnel_by_picture():
     assert player_world(view, info) is None  # one spiral in view: markers can't
     want = (view.dot[0] * 16 - info.minimap.cx, (view.dot[1] + 75) * 16 - info.minimap.cy)
     assert player_world(view, info, picture(info.id)) == approx(want, abs=32)
+
+
+def test_player_world_henesys_on_a_mac_fullscreen():
+    # The Mac's 1.107x stretch blurs the minimap: the dot is a yellow roof's size, and the
+    # picture's best scroll (191, 0) scores over PIC_MAX_MSE; the NPCs and portals place it.
+    view, info = fixture_view("pos_henesys_3024x1700_100.png"), load()["010001000"]
+    want = ((view.dot[0] + 191) * 16 - info.minimap.cx, view.dot[1] * 16 - info.minimap.cy)
+    assert player_world(view, info, picture(info.id)) == approx(want, abs=16)
