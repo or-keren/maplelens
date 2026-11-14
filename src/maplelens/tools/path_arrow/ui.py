@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable
 from html import escape
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -17,15 +17,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from maplelens.gamedata import (
+    Card,
     GameData,
     Match,
+    Source,
     SpotData,
     item_places,
     load_game,
     load_spots,
+    map_card,
     mob_places,
+    npc_card,
     npc_places,
     search,
 )
@@ -47,6 +52,7 @@ from maplelens.overlay import (
     text_label,
 )
 from maplelens.readers import Reading, glyphs
+from maplelens.spot_card import SpotCard
 from maplelens.tools.path_arrow.camera import by_size, can_place, fits, player_world, to_screen
 from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture
 from maplelens.tools.path_arrow.places import WHERE, PictureRow, match_row, place_row
@@ -68,9 +74,23 @@ NOT_LISTED = "Not in the map list yet, so no route from here"
 ACTIONS = (OPEN, HIDDEN)  # yellow: the player can act on these now; the rest are information
 MATCH_ROWS = 3  # visible matches, or places; the list scrolls for the rest
 CROSS = "\u00d7"  # the multiplication sign: back to the search
+SHOW_MS, HIDE_MS = 150, 80  # as on the Class tab: no flash on a sweep; swap in place
 Goal = tuple[str, tuple[int, int] | None, str | None]  # (map, NPC spot, the NPC's name)
 _DONE, _AHEAD, _NUM = "#6f7d93", "#c9d3e3", "#7b8aa3"  # mockup 3's route list
 _STYLE = FIELD_STYLE + f"QCheckBox {{ color: {VALUE_COLOR}; }}"
+
+
+class _Leave(QObject):
+    """Calls `gone` when a list's viewport is left or hidden (the list, the page or the tab)."""
+
+    def __init__(self, parent: QObject, gone: Callable[[QEvent.Type], None]):
+        super().__init__(parent)
+        self._gone = gone
+
+    def eventFilter(self, _obj, event):  # noqa: N802
+        if event.type() in (QEvent.Leave, QEvent.Hide):
+            self._gone(event.type())
+        return False
 
 
 class _Arrow(QWidget):
@@ -170,6 +190,10 @@ class PathArrowTool:
         self._now = 0.0
         self.arrow = _Arrow(layer)
         self._tab_w = TAB_W
+        self._card = SpotCard()
+        self._pending: tuple[Card, QWidget] | None = None  # the card the show timer will show
+        self._show_timer = QTimer(singleShot=True, interval=SHOW_MS, timeout=self._show_card)
+        self._hide_timer = QTimer(singleShot=True, interval=HIDE_MS, timeout=self._card.hide)
         self.tab = self._build_tab(settings["path_taxi"])
         self._render()
 
@@ -191,9 +215,11 @@ class PathArrowTool:
     def _picked_w(self) -> int:
         return self._tab_w - self._cross.sizeHint().width() - 6
 
-    @staticmethod
-    def _list() -> QListWidget:
+    def _list(self) -> QListWidget:
         lst = QListWidget()
+        lst.setMouseTracking(True)  # itemEntered without a button down
+        lst.itemEntered.connect(lambda item, lst=lst: self._hover(lst, item))
+        lst.viewport().installEventFilter(_Leave(lst, self._left))
         lst.setFocusPolicy(Qt.NoFocus)
         lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # names elide
         # Its own 256 px width hint would widen the box past the tab (the box's page stack
@@ -220,6 +246,68 @@ class PathArrowTool:
             rows = lst.sizeHintForRow(0) * min(n, MATCH_ROWS)
             lst.setFixedHeight(rows + 2 * lst.frameWidth())
             lst.setCurrentRow(0)
+
+    def _card_for(self, data) -> Card | None:
+        """The hover card of a match or a place; None for the rows with no card."""
+        if isinstance(data, Match):
+            if data.kind != "map":
+                return None
+            m = self.maps[data.ids[0]]
+            return map_card(self.spots, m.id, m.name, m.street)
+        if not isinstance(data, Source) or self._picked is None:
+            return None
+        m, kind = self.maps[data.map_id], self._picked.kind
+        if data.shop:
+            return npc_card(self.game, data.via, m.title, shop=True)
+        if kind == "npc":
+            return npc_card(self.game, self._picked.ids[0], m.title)
+        extra = f"≈ {data.score:.1f} drops per clear" if kind == "item" else None
+        return map_card(self.spots, m.id, m.name, m.street, str(data.via), extra)
+
+    def _hover(self, lst: QListWidget, item: QListWidgetItem | None) -> None:
+        card = self._card_for(item.data(Qt.UserRole)) if item else None
+        if card is None:
+            self._left()
+            return
+        row = lst.itemWidget(item)
+        if self._card.isVisible():  # straight from another row: swap it in place
+            self._hide_timer.stop()
+            self._card.fill(card, self.spots)
+            self._card.put(row)
+        else:
+            self._pending = (card, row)
+            self._show_timer.start()
+
+    def _left(self, kind=QEvent.Leave) -> None:
+        """The mouse left the rows: hide after a beat, so the next row swaps it in place; a
+        hidden list hides it at once."""
+        # The viewports report hiding while the tool is torn down too: at exit Python deletes
+        # the card and timers first.
+        parts = [getattr(self, n, None) for n in ("_card", "_show_timer", "_hide_timer")]
+        if not all(p is not None and isValid(p) for p in parts):
+            return
+        if kind == QEvent.Hide:
+            self._no_card()
+            return
+        self._show_timer.stop()
+        self._pending = None
+        if self._card.isVisible():
+            self._hide_timer.start()
+
+    def _show_card(self) -> None:
+        if self._pending is None:
+            return
+        (card, row), self._pending = self._pending, None
+        self._card.fill(card, self.spots)
+        self._card.put(row)
+        self._card.show()
+
+    def _no_card(self) -> None:
+        """Gone at once: the rows it was for are gone, or the trip starts."""
+        self._show_timer.stop()
+        self._hide_timer.stop()
+        self._pending = None
+        self._card.hide()
 
     def _build_tab(self, taxi: bool) -> QWidget:
         tab = QWidget()
@@ -356,6 +444,7 @@ class PathArrowTool:
 
     def _on_text(self, text: str) -> None:
         self._note = ""
+        self._no_card()
         self._matches.clear()
         names = {i: (m.name, m.street) for i, m in self.maps.items()}
         hits = search(self.game, names, text)
@@ -368,6 +457,7 @@ class PathArrowTool:
         """A map (or an NPC on one map) fills the field and the list closes on it; Start
         goes there. A monster, an item or any other NPC lists its places instead."""
         self._set_typing(False)
+        self._no_card()
         self._matches.setCurrentItem(item)
         if self._goal() is not None:
             self._search.blockSignals(True)  # re-searching could make another row current
@@ -391,6 +481,7 @@ class PathArrowTool:
     def _unpick(self) -> None:
         """Back to the search, its text and matches as they were."""
         self._picked = None
+        self._no_card()
         self._places.clear()
         for w in (self._picked_box, self._where_line, self._places):
             w.hide()
@@ -411,6 +502,7 @@ class PathArrowTool:
         else:
             found = npc_places(self.game, m.ids[0], self.maps, self.hops)
         self._places_for = self._places_key()
+        self._no_card()
         known, lst = self._here is not None, self._places
         lst.blockSignals(True)  # the caller renders once it's filled
         lst.clear()
@@ -483,6 +575,7 @@ class PathArrowTool:
 
     def _begin(self, goal: Goal | None) -> None:
         self._set_typing(False)
+        self._no_card()
         if self._here is None or self._unread() or goal is None:
             return
         map_id, at, label = goal
@@ -497,6 +590,7 @@ class PathArrowTool:
         self._render()
 
     def stop(self) -> None:
+        self._no_card()
         self.trip = None
         self._render()
 

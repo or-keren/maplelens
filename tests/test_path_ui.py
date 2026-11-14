@@ -3,7 +3,7 @@ import sys
 import pytest
 from pytest import approx
 
-from maplelens.gamedata import ICONS, PICTURES, GameData, Item, Mob, Npc, SpotData
+from maplelens.gamedata import ICONS, PICTURES, GameData, Item, Mob, Monster, Npc, SpotData
 from maplelens.readers import Reading
 from maplelens.readers.minimap_pos import MinimapView
 from maplelens.store import DEFAULTS
@@ -64,7 +64,9 @@ GAME = GameData(
         4000000: Item(4000000, "Cherry Coin", ((6, 10.0),), ()),
     },
 )
-SPOTS = SpotData({}, {}, PICTURES, ICONS)
+SPOTS = SpotData(
+    {}, {"1": Monster("Snail", 1, 8, 3)}, PICTURES, ICONS, {"A": {"1": 2}, "C": {"1": 9}}
+)
 
 
 def rows(lst):
@@ -844,3 +846,79 @@ def test_rows_elide_to_the_tab(make):
     assert "…" in narrow
     tool.set_tab_w(480)
     assert len(rows(tool._matches)[0].name_label.text()) > len(narrow)
+
+
+def enter(lst, n):
+    lst.itemEntered.emit(lst.item(n))
+
+
+def wait(ms):
+    from PySide6.QtTest import QTest
+
+    QTest.qWait(ms)
+
+
+def card_of(tool, lst, n):
+    from maplelens.tools.path_arrow.ui import SHOW_MS
+
+    enter(lst, n)
+    wait(SHOW_MS + 100)
+    return tool._card
+
+
+def test_hover_map_match_shows_card(make):
+    from maplelens.tools.path_arrow.ui import HIDE_MS
+
+    tool = make()
+    tool.tab.show()
+    tool._search.setText("cherry")
+    n = [m.kind for m in matches(tool._matches)].index("map")
+    card = card_of(tool, tool._matches, n)
+    assert card.isVisible() and card.title() == "Cherry"
+    other = next(i for i, m in enumerate(matches(tool._matches)) if m.kind != "map")
+    enter(tool._matches, other)  # a monster or item row: no card
+    wait(HIDE_MS + 100)
+    assert not card.isVisible()
+
+
+def test_hover_drop_place_card_has_drops_line(make):
+    from PySide6.QtWidgets import QLabel
+
+    tool = make()
+    tool.tab.show()
+    feed(tool, title("A"))
+    pick(tool, "snail shell")
+    card = card_of(tool, tool._places, 1)  # Cherry: Snail x9
+    assert card.isVisible() and card.title() == "Cherry"
+    shown = [w.text() for w in card.findChildren(QLabel)]
+    assert any(t.startswith("≈ ") and t.endswith(" drops per clear") for t in shown)
+    card = card_of(tool, tool._places, 0)  # Mina's shop
+    assert card.title() == "Mina" and "Sells it" in [w.text() for w in card.findChildren(QLabel)]
+
+
+def test_card_hides_on_start_and_on_cross(make):
+    tool = make()
+    tool.tab.show()
+    feed(tool, title("A"))
+    pick(tool, "snail")
+    assert card_of(tool, tool._places, 0).isVisible()
+    tool._start.click()
+    assert not tool._card.isVisible() and tool.running
+    tool.stop()
+    tool._cross.click()
+    assert not tool._card.isVisible()
+    tool._unpick()
+    pick(tool, "snail")
+    assert card_of(tool, tool._places, 0).isVisible()
+    tool._cross.click()
+    assert not tool._card.isVisible()
+
+
+def test_card_hides_when_tab_hides(make):
+    tool = make()
+    tool.tab.show()
+    feed(tool, title("A"))
+    pick(tool, "snail")
+    assert card_of(tool, tool._places, 0).isVisible()
+    tool.tab.hide()
+    assert not tool._card.isVisible()
