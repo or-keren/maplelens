@@ -1,7 +1,7 @@
 """The game's data: NPCs, monsters and items (game.json, monsters.json), and the spawn spots."""
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -199,3 +199,120 @@ def search(
         found.append((tier, KINDS.index(kind), name, Match(kind, ids, name, line)))
     found.sort(key=lambda f: f[:3])
     return [f[3] for f in found[:limit]]
+
+
+NEAR_TIE = 0.8  # Best: a place scoring this much of the top counts as tied with it
+
+
+@dataclass(frozen=True)
+class Source:
+    map_id: str
+    at: tuple[int, int] | None  # an NPC's spot
+    via: int  # monster id, or the shop NPC's id
+    shop: bool
+    count: int  # spawns of `via` on the map; 0 for a shop
+    rate: float | None  # `via`'s rate; None for a monster search or unknown
+    others: int  # other droppers on the same map
+    score: float  # expected drops per clear, or spawns
+    hops: int | None
+
+
+def _rank(group: list[Source], closest: bool) -> list[Source]:
+    """One group's order. Hops are all known, or all None (then they count as equal)."""
+
+    def near(s):
+        return (s.hops or 0, -s.score, s.map_id)
+
+    if closest or not group:
+        return sorted(group, key=near)
+    top = max(s.score for s in group)
+    tied = [s for s in group if s.score >= NEAR_TIE * top]
+    rest = [s for s in group if s.score < NEAR_TIE * top]
+    return sorted(tied, key=near) + sorted(rest, key=lambda s: (-s.score, s.map_id))
+
+
+def _arrange(shops, rated, unrated, closest: bool) -> list[Source]:
+    """Shops, rated maps, unrated maps; places out of reach last when any place is in reach."""
+    reach = any(s.hops is not None for s in shops + rated + unrated)
+
+    def split(group):
+        gone = [s for s in group if reach and s.hops is None]
+        return [s for s in group if s not in gone], gone
+
+    def shop_order(group):
+        return sorted(group, key=lambda s: (s.hops is None, s.hops or 0, s.map_id))
+
+    (sl, sd), (rl, rd), (ul, ud) = split(shops), split(rated), split(unrated)
+    return (
+        shop_order(sl)
+        + _rank(rl, closest and reach)
+        + _rank(ul, closest and reach)
+        + shop_order(sd)
+        + _rank(rd, False)
+        + _rank(ud, False)
+    )
+
+
+def _shops(data: GameData, item: Item, listed: Collection[str], hops: Hops) -> list[Source]:
+    out = []
+    for npc_id in item.shops:
+        for map_id, x, y in data.npcs[npc_id].places if npc_id in data.npcs else ():
+            if map_id in listed:
+                at = (x, y) if x is not None and y is not None else None
+                out.append(Source(map_id, at, npc_id, True, 0, None, 0, 0, hops(map_id)))
+    return out
+
+
+def mob_places(
+    data: GameData, mob_ids: Iterable[int], listed: Collection[str], hops: Hops, closest: bool
+) -> list[Source]:
+    """The maps these (same-name) monsters spawn on, spawns added up."""
+    per_map: dict[str, list[tuple[int, int]]] = {}
+    for mob_id in mob_ids:
+        for map_id, n in (data.mobs[mob_id].spawns if mob_id in data.mobs else {}).items():
+            if n > 0 and map_id in listed:
+                per_map.setdefault(map_id, []).append((n, mob_id))
+    unrated = []
+    for map_id, rows in per_map.items():
+        n, via = max(rows, key=lambda r: (r[0], -r[1]))
+        total = sum(r[0] for r in rows)
+        unrated.append(Source(map_id, None, via, False, total, None, 0, total, hops(map_id)))
+    return _arrange([], [], unrated, closest)
+
+
+def item_places(
+    data: GameData, item_id: int, listed: Collection[str], hops: Hops, closest: bool
+) -> list[Source]:
+    """Where an item is sold, then where it drops, best first (see the design's ranking)."""
+    item = data.items[item_id]
+    per_map: dict[str, list[tuple[int, int, float | None]]] = {}  # (spawns, mob id, rate)
+    for mob_id, rate in item.drops:
+        for map_id, n in (data.mobs[mob_id].spawns if mob_id in data.mobs else {}).items():
+            if n > 0 and map_id in listed:
+                per_map.setdefault(map_id, []).append((n, mob_id, rate))
+    rated, unrated = [], []
+    for map_id, rows in per_map.items():
+        with_rate = [(n * r / 100, -m, n, r) for n, m, r in rows if r is not None]
+        if with_rate:
+            _, neg, n, r = max(with_rate)
+            total = sum(w[0] for w in with_rate)
+            rated.append(
+                Source(map_id, None, -neg, False, n, r, len(rows) - 1, total, hops(map_id))
+            )
+        else:
+            n, m = max((n, -m) for n, m, _ in rows)
+            total = sum(n for n, _, _ in rows)
+            unrated.append(
+                Source(map_id, None, -m, False, n, None, len(rows) - 1, total, hops(map_id))
+            )
+    return _arrange(_shops(data, item, listed, hops), rated, unrated, closest)
+
+
+def npc_places(data: GameData, npc_id: int, listed: Collection[str], hops: Hops) -> list[Source]:
+    """The listed maps an NPC stands on, nearest first."""
+    out = []
+    for map_id, x, y in data.npcs[npc_id].places:
+        if map_id in listed:
+            at = (x, y) if x is not None and y is not None else None
+            out.append(Source(map_id, at, npc_id, False, 0, None, 0, 0, hops(map_id)))
+    return sorted(out, key=lambda s: (s.hops is None, s.hops or 0, s.map_id))

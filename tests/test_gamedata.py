@@ -1,7 +1,18 @@
 import json
 from pathlib import Path
 
-from maplelens.gamedata import SEARCH_LIMIT, GameData, Item, Mob, Npc, load_game, search
+from maplelens.gamedata import (
+    SEARCH_LIMIT,
+    GameData,
+    Item,
+    Mob,
+    Npc,
+    item_places,
+    load_game,
+    mob_places,
+    npc_places,
+    search,
+)
 from maplelens.tools.class_helper.data import MAPS
 
 FIX = Path(__file__).parent / "fixtures" / "gamedata"
@@ -122,3 +133,146 @@ def test_search_caps_and_blank():
     assert len(search(g, maps, "a")) <= SEARCH_LIMIT
     big = GameData({}, {i: Mob(i, f"a{i}", {}) for i in range(50)}, {})
     assert len(search(big, {}, "a")) == SEARCH_LIMIT
+
+
+def _gd(mobs, drops, shops=(), npcs=()):
+    return GameData(
+        {n.id: n for n in npcs},
+        {m.id: m for m in mobs},
+        {1: Item(1, "Thing", tuple(drops), tuple(shops))},
+    )
+
+
+def _ids(places):
+    return [p.map_id for p in places]
+
+
+def _hops(table):
+    return table.get
+
+
+def test_item_score_sums_droppers():
+    d = _gd([Mob(1, "A", {"m": 10}), Mob(2, "B", {"m": 5})], [(1, 40.0), (2, 10.0)])
+    (s,) = item_places(d, 1, {"m"}, _hops({"m": 2}), False)
+    assert (s.score, s.via, s.others, s.count, s.rate, s.shop, s.hops) == (
+        4.5,
+        1,
+        1,
+        10,
+        40.0,
+        False,
+        2,
+    )
+
+
+def test_rate_beats_spawns():
+    d = _gd([Mob(1, "A", {"A": 20}), Mob(2, "B", {"B": 5})], [(1, 1.0), (2, 40.0)])
+    assert _ids(item_places(d, 1, {"A", "B"}, _hops({"A": 1, "B": 5}), False)) == ["B", "A"]
+
+
+def _near(a_score, b_score):
+    d = _gd(
+        [Mob(1, "A", {"A": 1}), Mob(2, "B", {"B": 1})],
+        [(1, a_score * 100.0), (2, b_score * 100.0)],
+    )
+    return _ids(item_places(d, 1, {"A", "B"}, _hops({"A": 3, "B": 1}), False))
+
+
+def test_near_tie_nearer_wins():
+    assert _near(10, 8.5) == ["B", "A"]
+    assert _near(10, 7) == ["A", "B"]
+
+
+def test_shops_first_both_modes():
+    d = _gd(
+        [Mob(1, "A", {"drop": 5})],
+        [(1, 50.0)],
+        shops=[9],
+        npcs=[Npc(9, "Rina", (("shop", 3, None),))],
+    )
+    h = _hops({"drop": 1, "shop": 6})
+    for closest in (False, True):
+        out = item_places(d, 1, {"drop", "shop"}, h, closest)
+        assert _ids(out) == ["shop", "drop"]
+        assert (out[0].shop, out[0].at, out[0].via, out[0].count) == (True, None, 9, 0)
+
+
+def test_shop_per_listed_map_sorted_with_spot():
+    npcs = [Npc(9, "R", (("b", 1, 2), ("a", None, 2), ("x", 1, 1)))]
+    d = _gd([], [], shops=[9], npcs=npcs)
+    out = item_places(d, 1, {"a", "b"}, _hops({"a": 4, "b": 4}), False)
+    assert [(p.map_id, p.at) for p in out] == [("a", None), ("b", (1, 2))]
+
+
+def test_unrated_after_rated():
+    d = _gd([Mob(1, "A", {"A": 50}), Mob(2, "B", {"B": 1})], [(1, None), (2, 1.0)])
+    for closest in (False, True):
+        assert _ids(item_places(d, 1, {"A", "B"}, _hops({"A": 1, "B": 9}), closest)) == ["B", "A"]
+
+
+def test_all_unrated_falls_back_to_spawns():
+    d = _gd([Mob(1, "A", {"A": 3}), Mob(2, "B", {"B": 9})], [(1, None), (2, None)])
+    out = item_places(d, 1, {"A", "B"}, _hops({"A": 1, "B": 1}), False)
+    assert _ids(out) == ["B", "A"]
+    assert (out[0].score, out[0].rate, out[0].via) == (9, None, 2)
+
+
+def test_mixed_map_scores_only_rated():
+    d = _gd(
+        [Mob(1, "A", {"m": 50}), Mob(2, "B", {"m": 2}), Mob(3, "C", {"m": 4})],
+        [(1, None), (2, 10.0), (3, 10.0)],
+    )
+    (s,) = item_places(d, 1, {"m"}, _hops({"m": 1}), False)
+    assert (s.via, s.score, s.others) == (3, 0.6000000000000001, 2)
+
+
+def test_unreachable_last():
+    d = _gd(
+        [Mob(1, "A", {"A": 5}), Mob(2, "B", {"B": 1}), Mob(3, "C", {"C": 1})],
+        [(1, 90.0), (2, None), (3, 1.0)],
+    )
+    h = _hops({"B": 1, "C": 2})
+    for closest in (False, True):
+        assert _ids(item_places(d, 1, {"A", "B", "C"}, h, closest)) == ["C", "B", "A"]
+
+
+def test_unknown_position_closest_is_best():
+    d = _gd([Mob(1, "A", {"A": 1}), Mob(2, "B", {"B": 2})], [(1, 100.0), (2, 100.0)])
+    h = _hops({})
+    best = item_places(d, 1, {"A", "B"}, h, False)
+    assert _ids(best) == ["B", "A"]
+    assert item_places(d, 1, {"A", "B"}, h, True) == best
+
+
+def test_unlisted_maps_dropped():
+    d = _gd(
+        [Mob(1, "A", {"A": 1, "Z": 9})], [(1, 5.0)], shops=[9], npcs=[Npc(9, "R", (("Z", 1, 1),))]
+    )
+    assert _ids(item_places(d, 1, {"A"}, _hops({}), False)) == ["A"]
+    assert _ids(mob_places(d, [1], {"A"}, _hops({}), False)) == ["A"]
+    assert npc_places(d, 9, {"A"}, _hops({})) == []
+
+
+def test_unknown_dropper_ignored():
+    d = _gd([Mob(1, "A", {"A": 1})], [(1, 5.0), (77, 50.0)])
+    (s,) = item_places(d, 1, {"A"}, _hops({}), False)
+    assert (s.via, s.others) == (1, 0)
+
+
+def test_mob_places_merged_ids():
+    d = _gd([Mob(1, "A", {"m": 3, "n": 1}), Mob(2, "A", {"m": 4})], [])
+    out = mob_places(d, [1, 2], {"m", "n"}, _hops({"m": 2, "n": 1}), False)
+    assert _ids(out) == ["m", "n"]
+    m = out[0]
+    assert (m.count, m.score, m.via, m.others, m.rate, m.shop) == (7, 7, 2, 0, None, False)
+
+
+def test_npc_places():
+    npcs = [Npc(9, "R", (("b", 1, 2), ("a", 5, None), ("c", 0, 0), ("x", 1, 1)))]
+    d = _gd([], [], npcs=npcs)
+    out = npc_places(d, 9, {"a", "b", "c"}, _hops({"a": 2, "b": 2}))
+    assert [(p.map_id, p.at, p.via, p.hops) for p in out] == [
+        ("a", None, 9, 2),
+        ("b", (1, 2), 9, 2),
+        ("c", (0, 0), 9, None),
+    ]
