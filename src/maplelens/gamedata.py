@@ -265,7 +265,8 @@ def _entries(data: GameData, maps: Mapping[str, tuple[str, str]]):
         by_name.setdefault(mob.name, []).append(mob)
     for name, group in by_name.items():
         places = {m for g in group for m, n in g.spawns.items() if n > 0 and m in maps}
-        line = f"Monster · Lv {min(g.level for g in group)} · {len(places)} maps"
+        n = f"{len(places)} map{'s' * (len(places) != 1)}"
+        line = f"Monster · Lv {min(g.level for g in group)} · {n}"
         yield "monster", name, tuple(sorted(g.id for g in group)), line, ""
     for npc in data.npcs.values():
         places = sorted({m for m, _, _ in npc.places if m in maps})

@@ -109,6 +109,7 @@ def test_search_lines():
     assert _lines("maple road")["Maple Road"] == "Map · Maple Island"  # the street
     assert _lines("maple island")["Maple Road"] == "Map · Maple Island"
     assert _lines("roger")["Roger"] == "NPC · 2 maps"
+    assert _lines("red snail")["Red Snail"].endswith(" · 1 map")  # singular
 
 
 def test_same_name_monsters_merge():

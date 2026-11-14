@@ -718,7 +718,7 @@ def test_pick_monster_lists_places(make):
     tool._closest.click()
     assert names(places) == ["Apple", "Cherry", "Hush"]  # nearest first
     assert settings["path_best"] is False and calls == [1]
-    assert places.currentRow() == 0
+    assert places.currentRow() == 1  # Cherry, the chosen place, stays chosen
     tool._taxi.setChecked(False)
     assert names(places) == ["Apple", "Cherry", "Hush"]
     feed(tool, title("C"), 1.0)  # a new map re-sorts
@@ -745,6 +745,20 @@ def test_drop_shop_and_npc_lines(make):
     assert tool._where.text() == "Where to find them"
     assert names(tool._places) == ["Apple", "Cherry"]
     assert lines(tool._places) == ["here", "2 away"]
+
+
+def test_resort_keeps_the_chosen_place(make):
+    tool = make()
+    feed(tool, title("A"))
+    pick(tool, "snail")
+    tool._places.setCurrentRow(1)  # Hush
+    tool._closest.click()  # Apple, Cherry, Hush
+    assert names(tool._places) == ["Apple", "Cherry", "Hush"]
+    assert names(tool._places)[tool._places.currentRow()] == "Hush"
+    feed(tool, title("C"), 1.0)  # a new map re-sorts too
+    assert names(tool._places)[tool._places.currentRow()] == "Hush"
+    tool._start.click()
+    assert tool.trip.goal == "M"
 
 
 def test_start_from_place(make):

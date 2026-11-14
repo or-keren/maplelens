@@ -493,6 +493,10 @@ class PathArrowTool:
         here = self._here.id if self._here else None
         return self._picked, here, self._taxi.isChecked(), self._settings["path_best"]
 
+    @staticmethod
+    def _place_id(s) -> tuple:
+        return s.map_id, s.via, s.shop
+
     def _fill_places(self) -> None:
         m, closest = self._picked, not self._settings["path_best"]
         if m.kind == "monster":
@@ -504,12 +508,19 @@ class PathArrowTool:
         self._places_for = self._places_key()
         self._no_card()
         known, lst = self._here is not None, self._places
+        cur = lst.currentItem()
+        kept = cur and self._place_id(cur.data(Qt.UserRole))
         lst.blockSignals(True)  # the caller renders once it's filled
         lst.clear()
         for s in found:
             row = place_row(self.game, self.spots, self.maps, m.kind, s, known, self._row_w())
             self._add(lst, row, s)
         self._show_rows(lst)
+        if kept:  # a re-sort keeps the place the player chose
+            for i in range(lst.count()):
+                if self._place_id(lst.item(i).data(Qt.UserRole)) == kept:
+                    lst.setCurrentRow(i)
+                    break
         lst.blockSignals(False)
         self._where.setText(WHERE[m.kind] if found else f"{WHERE[m.kind]}: unknown")
         self._switch.setVisible(bool(found) and m.kind != "npc")  # an NPC's go by hops only
