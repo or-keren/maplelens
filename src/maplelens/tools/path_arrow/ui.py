@@ -32,8 +32,10 @@ from maplelens.overlay import (
     text_label,
 )
 from maplelens.readers import Reading, glyphs
+from maplelens.spawns import SpotData, load_spots
 from maplelens.tools.path_arrow.camera import by_size, can_place, fits, player_world, to_screen
-from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture, search
+from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture
+from maplelens.tools.path_arrow.monsters import MonsterHit, haunts, matches
 from maplelens.tools.path_arrow.route import Trip, plan
 
 # Normalized px from the feet (the dot's world spot) up to the arrow's centre: just above
@@ -51,6 +53,11 @@ ON_MAP = "{} is on this map"
 NOT_LISTED = "Not in the map list yet, so no route from here"
 ACTIONS = (OPEN, HIDDEN)  # yellow: the player can act on these now; the rest are information
 MATCH_ROWS = 3  # visible matches; the list scrolls for the rest
+# A monster row's id (map rows keep theirs in UserRole), and the name a map row puts in
+# the field when its text says more than the name.
+MONSTER_ROLE = Qt.UserRole + 1
+NAME_ROLE = Qt.UserRole + 2
+_MORE = chr(0x203A)  # single right angle, as a Row's: a monster row opens its maps
 _DONE, _AHEAD, _NUM = "#6f7d93", "#c9d3e3", "#7b8aa3"  # mockup 3's route list
 _STYLE = FIELD_STYLE + f"QCheckBox {{ color: {VALUE_COLOR}; }}"
 
@@ -102,15 +109,17 @@ class _Search(QLineEdit):
 
 
 class PathArrowTool:
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - the tool's collaborators, as the other tools take
         self,
         settings: dict,
         on_settings_changed: Callable[[], None],
         layer: Layer,
         allow_typing: Callable[[bool], None],
         maps: dict[str, MapInfo] | None = None,
+        spots: SpotData | None = None,
     ):
         self.maps = load() if maps is None else maps
+        self._spots = load_spots() if spots is None else spots
         self._settings, self._changed = settings, on_settings_changed
         self._layer, self._allow_typing = layer, allow_typing
         self.title = "Path"
@@ -147,6 +156,8 @@ class PathArrowTool:
         self._info = InfoLine()
         self._search = _Search(self._set_typing)
         self._search.textChanged.connect(self._on_text)
+        self._monster_line = text_label("", LABEL_PT, LABEL_COLOR)  # over a monster's maps
+        self._monster_line.hide()
         self._matches = QListWidget()
         self._matches.setFocusPolicy(Qt.NoFocus)
         self._matches.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # names elide
@@ -167,7 +178,10 @@ class PathArrowTool:
 
         self._choose, self._running = QWidget(), QWidget()
         for page, widgets in [
-            (self._choose, [self._search, self._matches, self._taxi, self._start]),
+            (
+                self._choose,
+                [self._search, self._monster_line, self._matches, self._taxi, self._start],
+            ),
             (self._running, [self._route_list, self._stop]),
         ]:
             col = QVBoxLayout(page)
@@ -259,14 +273,25 @@ class PathArrowTool:
 
     def _on_text(self, text: str) -> None:
         self._note = ""
+        self._monster_line.hide()
         self._matches.clear()
-        hits = search(self.maps, text)
-        names = [m.name for m in hits]
-        for m in hits:
-            item = QListWidgetItem(f"{m.name} · {m.street}" if names.count(m.name) > 1 else m.name)
-            item.setData(Qt.UserRole, m.id)
-            item.setToolTip(m.title)
+        hits = matches(self.maps, self._spots, text)
+        names = [h.name for h in hits if isinstance(h, MapInfo)]
+        for h in hits:
+            if isinstance(h, MonsterHit):
+                mon = h.monster
+                item = QListWidgetItem(f"{mon.name}  Lv {mon.level}  {_MORE}")
+                item.setData(MONSTER_ROLE, h.id)
+                item.setToolTip(f"Lv {mon.level} · {mon.hp:,} HP · {mon.exp:,} EXP")
+            else:
+                item = QListWidgetItem(_map_label(h, names))
+                item.setData(Qt.UserRole, h.id)
+                item.setToolTip(h.title)
             self._matches.addItem(item)
+        self._show_matches()
+
+    def _show_matches(self) -> None:
+        """Open the list on its first row, MATCH_ROWS tall; closed when empty."""
         n = self._matches.count()
         self._matches.setVisible(n > 0)
         if n:
@@ -275,11 +300,45 @@ class PathArrowTool:
             self._matches.setCurrentRow(0)
         self._render()
 
-    def _pick(self, item: QListWidgetItem) -> None:
-        """A clicked match fills the field and the list closes on it; Start goes there."""
+    def _show_monster(self, monster_id: str) -> None:
+        """The monster's name in the field, and the list swapped for its maps, busiest first."""
+        mon = self._spots.monsters[monster_id]
+        self._fill_field(mon.name)
+        found = haunts(self._spots, self.maps, monster_id)
+        self._monster_line.setText(
+            f"{mon.name} · Lv {mon.level} · {len(found)} map{'s' if len(found) != 1 else ''}"
+        )
+        self._monster_line.show()
+        names = [self.maps[h.map_id].name for h in found]
+        self._matches.clear()
+        for h in found:
+            m = self.maps[h.map_id]
+            label = _map_label(m, names)
+            item = QListWidgetItem(f"{label}  {h.count} · {h.share}%")
+            item.setData(Qt.UserRole, m.id)
+            item.setData(NAME_ROLE, label)
+            item.setToolTip(
+                f"{m.title}\n{h.count} of {h.total} spawn spots · {h.types} monster types"
+            )
+            self._matches.addItem(item)
+        self._set_typing(False)
+        self._show_matches()
+
+    def _fill_field(self, text: str) -> None:
         self._search.blockSignals(True)  # re-searching the name could make another row current
-        self._search.setText(item.text())
+        self._search.setText(text)
         self._search.blockSignals(False)
+
+    def _pick(self, item: QListWidgetItem) -> None:
+        """A clicked map fills the field and the list closes on it; Start goes there.
+
+        A clicked monster opens its maps instead.
+        """
+        if item.data(MONSTER_ROLE):
+            self._show_monster(item.data(MONSTER_ROLE))
+            return
+        self._fill_field(item.data(NAME_ROLE) or item.text())
+        self._monster_line.hide()
         self._matches.setCurrentItem(item)
         self._matches.hide()
         self._set_typing(False)
@@ -315,6 +374,9 @@ class PathArrowTool:
         self._set_typing(False)
         if self._here is None or self._unread() or item is None:
             return
+        if item.data(MONSTER_ROLE):  # Start on a monster: its busiest map
+            self._show_monster(item.data(MONSTER_ROLE))
+            item = self._matches.currentItem()
         taxi = self._taxi.isChecked()
         if self._settings.get("path_taxi") != taxi:
             self._settings["path_taxi"] = taxi
@@ -446,3 +508,8 @@ class PathArrowTool:
         self.arrow.move(round(x - ARROW_SIZE / 2), round(y - ARROW_SIZE / 2))
         self.arrow.show()
         self.arrow.update()
+
+
+def _map_label(m: MapInfo, names: list[str]) -> str:
+    """The map's name, with its street when another listed map shares the name."""
+    return f"{m.name} · {m.street}" if names.count(m.name) > 1 else m.name

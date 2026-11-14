@@ -1,10 +1,12 @@
 import sys
+from pathlib import Path
 
 import pytest
 from pytest import approx
 
 from maplelens.readers import Reading
 from maplelens.readers.minimap_pos import MinimapView
+from maplelens.spawns import MapSpawns, Monster, SpotData
 from maplelens.store import DEFAULTS
 from maplelens.tools.path_arrow.maps import MapInfo, Minimap, Portal
 
@@ -42,6 +44,17 @@ MAPS = {
     ]
 }
 
+# Snail: 3 of 3 spots on Apple, 1 of 2 on Cherry; Slime: the other spot on Cherry.
+SPOTS = SpotData(
+    {
+        "A": MapSpawns((10, 10), None, (("s", 0, 0),) * 3, {}),
+        "C": MapSpawns((10, 10), None, (("s", 0, 0), ("l", 0, 0)), {}),
+    },
+    {"s": Monster("Snail", 1, 15, 1), "l": Monster("Slime", 6, 50, 3)},
+    Path("."),
+    Path("."),
+)
+
 
 def title(id):
     return MAPS[id].title
@@ -61,7 +74,7 @@ def make(monkeypatch):
         layer = Layer()
         layer.show()
         settings = dict(DEFAULTS, boxes={}) if settings is None else settings
-        return PathArrowTool(settings, on_changed, layer, typing, MAPS)
+        return PathArrowTool(settings, on_changed, layer, typing, MAPS, SPOTS)
 
     return build
 
@@ -635,3 +648,68 @@ def test_route_steps_with_a_long_shared_name_stay_apart(make):
     rows = [re.sub("<[^>]+>", "", r) for r in tool._route_list.text().split("<br>")]
     for row, numeral in zip(rows[1:], (" I", " II", " III"), strict=True):
         assert "…" in row and row.endswith(numeral)  # cut, but the end that differs stays
+
+
+def rows(tool):
+    return [tool._matches.item(i).text() for i in range(tool._matches.count())]
+
+
+def pick_monster(tool, text="snail"):
+    tool._search.setText(text)
+    tool._matches.itemClicked.emit(tool._matches.item(0))
+
+
+def test_typing_a_monster_lists_it(make):
+    tool = make()
+    tool._search.setText("sna")
+    assert rows(tool) == ["Snail  Lv 1  ›"]
+    assert "15 HP" in tool._matches.item(0).toolTip()
+
+
+def test_picking_a_monster_lists_its_maps(make):
+    tool = make()
+    feed(tool, title("B"))
+    pick_monster(tool)
+    assert tool._search.text() == "Snail"  # no new search: the list stays the monster's maps
+    assert rows(tool) == ["Apple  3 · 100%", "Cherry  1 · 50%"]  # most spawns first
+    assert not tool._matches.isHidden() and tool._matches.currentRow() == 0
+    assert not tool._monster_line.isHidden()
+    assert tool._monster_line.text() == "Snail · Lv 1 · 2 maps"
+    assert "1 of 2 spawn spots · 2 monster types" in tool._matches.item(1).toolTip()
+    assert tool._start.isEnabled()
+
+
+def test_start_after_picking_a_monster_starts_a_trip(make):
+    tool = make()
+    feed(tool, title("B"))
+    pick_monster(tool)
+    tool._matches.itemClicked.emit(tool._matches.item(1))
+    assert tool._search.text() == "Cherry" and tool._matches.isHidden()
+    assert tool._monster_line.isHidden()
+    tool._start.click()
+    assert tool.running and tool.trip.goal == "C"
+
+
+def test_start_on_a_monster_row_goes_to_its_busiest_map(make):
+    tool = make()
+    feed(tool, title("B"))
+    tool._search.setText("snail")  # the monster's row is current, never clicked
+    tool._start.click()
+    assert tool.running and tool.trip.goal == "A"
+
+
+def test_editing_after_a_monster_searches_again(make):
+    tool = make()
+    pick_monster(tool)
+    tool._search.setText("cher")
+    assert rows(tool) == ["Cherry"]
+    assert tool._monster_line.isHidden()
+
+
+def test_go_leaves_monster_mode(make):
+    tool = make()
+    feed(tool, title("B"))
+    pick_monster(tool)
+    tool.go("C")
+    assert tool.running and tool.trip.goal == "C"
+    assert tool._monster_line.isHidden()
