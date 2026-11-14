@@ -1,4 +1,5 @@
-from maplelens.tools.class_helper.data import MapSpawns, Monster, Place, SpotData
+from maplelens.spawns import MapSpawns, Monster, SpotData
+from maplelens.tools.class_helper.data import Place
 from maplelens.tools.class_helper.plan import DOT_COLOURS, respawn_text, spot_card
 
 PLACE = Place("000000001", "Victoria Road / Snail Field", "Victoria Road / Snail Field")

@@ -43,6 +43,7 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
   - `data/classes.json` — per-job advice (training maps, AP/SP plans, gear)
   - `data/quests.json` — the quests (the NPCs, monsters and items each quest needs; event quests are left out)
   - `store.py` — settings file and data folder
+  - `spawns.py` — loads `data/monsters.json` (spawn spots, monster stats) and finds the map pictures and monster icons; shared by the Class and Path tools
   - `update.py` — the update check's pure part: GitHub's latest-release reply → `Release`, version compare, digest check (`MAPLELENS_UPDATE_REPO` overrides the repo)
   - `update_mac.py` — the Mac update helper: swaps the app from the downloaded dmg, then relaunches it
   - `reader.py` — the per-tick grab, trim and `read_all` (`read_game`), run here (`InlineReader`) or in a child process (`ProcessReader`)

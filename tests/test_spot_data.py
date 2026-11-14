@@ -2,7 +2,8 @@ import os
 
 import pytest
 
-from maplelens.tools.class_helper.data import PICTURES, load, load_spots
+from maplelens.spawns import PICTURES, load_spots
+from maplelens.tools.class_helper.data import load
 
 
 def test_every_training_spot_has_spawn_data():

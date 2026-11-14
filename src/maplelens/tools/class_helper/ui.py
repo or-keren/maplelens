@@ -34,7 +34,8 @@ from maplelens.readers import Reading, glyphs
 from maplelens.readers.skill_window import SkillWindow
 from maplelens.readers.stat_window import StatWindow
 from maplelens.readers.window import UNREADABLE
-from maplelens.tools.class_helper.data import ClassData, Place, SpotData, load, load_spots
+from maplelens.spawns import SpotData, load_spots
+from maplelens.tools.class_helper.data import ClassData, Place, load
 from maplelens.tools.class_helper.plan import (
     Card,
     advance_ready,
