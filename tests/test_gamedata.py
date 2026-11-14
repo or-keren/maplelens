@@ -276,3 +276,13 @@ def test_npc_places():
         ("b", (1, 2), 9, 2),
         ("c", (0, 0), 9, None),
     ]
+
+
+def test_closest_orders_by_hops_best_by_score():
+    h = _hops({"A": 3, "B": 1})
+    d = _gd([Mob(1, "A", {"A": 1}), Mob(2, "B", {"B": 1})], [(1, 1000.0), (2, 200.0)])
+    assert _ids(item_places(d, 1, {"A", "B"}, h, False)) == ["A", "B"]
+    assert _ids(item_places(d, 1, {"A", "B"}, h, True)) == ["B", "A"]
+    d = _gd([Mob(1, "M", {"A": 10, "B": 2})], [])
+    assert _ids(mob_places(d, [1], {"A", "B"}, h, False)) == ["A", "B"]
+    assert _ids(mob_places(d, [1], {"A", "B"}, h, True)) == ["B", "A"]
