@@ -49,7 +49,7 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
   - `reader.py` — the per-tick grab, trim and `read_all` (`read_game`), run here (`InlineReader`) or in a child process (`ProcessReader`)
   - `app.py` — entry point (`uv run maplelens`); also the update check's threads, download and handoff to Setup (`UpdateCheck`), the Windows tray icon (`make_tray`), Hide / Show (`Shown`) and the tick (`Tick`, which keeps `turn` / `seen_at` for that schedule; on the Mac it reads through `ProcessReader`, a helper process macOS doesn't slow, `make_reader`)
   - `tools/exp_meter/` — the EXP meter: `meter`, `history`, `text`, `ui`
-  - `tools/path_arrow/` — the path arrow: `maps`, `route`, `camera`, `ui`
+  - `tools/path_arrow/` — the path arrow: `maps`, `monsters` (monster search: a monster's maps, most spawns first), `route`, `camera`, `ui`
   - `tools/class_helper/` — the class helper: `data`, `plan`, `ui` (the Class tab, the training spot hover card `SpotCard`, and the marks on the stat and skill windows)
   - `tools/quest_helper/` — the quest helper: `data`, `plan`, `rewards`, `ui` (the Quests tab, which shows each quest's rewards; the box switches to it while a quest window is open)
 - `scripts/check_screen_only.py` — the guard; banned lists live there, with reasons
