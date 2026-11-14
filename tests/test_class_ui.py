@@ -716,7 +716,7 @@ def test_the_card_never_takes_focus_or_clicks(make):
 def test_card_spot_flips_right_and_stays_on_screen():
     from PySide6.QtCore import QPoint, QRect, QSize
 
-    from maplelens.tools.class_helper.ui import card_spot
+    from maplelens.spot_card import card_spot
 
     screen, size = QRect(0, 0, 1366, 768), QSize(300, 400)
     assert card_spot(QRect(900, 40, 238, 300), 100, size, screen) == QPoint(900 - 8 - 300, 100)

@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Callable, Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 
@@ -38,6 +38,7 @@ class SpotData:
     monsters: dict[str, Monster]
     pictures: Path
     icons: Path
+    counts: dict[str, dict[str, int]] = field(default_factory=dict)  # maps with no spawn spots
 
     def picture(self, map_id: str) -> Path | None:
         p = self.pictures / f"{map_id}.webp"
@@ -63,7 +64,7 @@ def load_spots(path: Path = SPOTS, pictures: Path = PICTURES, icons: Path = ICON
     monsters = {
         i: Monster(m["name"], m["level"], m["hp"], m["exp"]) for i, m in raw["monsters"].items()
     }
-    return SpotData(maps, monsters, pictures, icons)
+    return SpotData(maps, monsters, pictures, icons, raw.get("counts", {}))
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,100 @@ def load_game(monsters: Path = SPOTS, game: Path = GAME) -> GameData:
         for i, it in raw["items"].items()
     }
     return GameData(npcs, mobs, items)
+
+
+DOT_COLOURS = ("#ffcc33", "#7fa8ff", "#8ce678", "#ff8cc8")
+CAP = "Up to {} monsters at once"
+
+
+@dataclass(frozen=True)
+class CardMob:
+    id: str
+    name: str
+    stats: str
+    spots: str
+    colour: str
+
+
+@dataclass(frozen=True)
+class Card:
+    title: str
+    street: str
+    picture: Path | None
+    size: tuple[int, int]
+    mobs: tuple[CardMob, ...]
+    cap: str | None
+    dots: tuple[tuple[int, int, str], ...]  # (x, y, colour) in picture pixels
+    lines: tuple[str, ...] = ()  # extra lines after `cap`
+
+
+def respawn_text(lo: float, hi: float) -> str:
+    unit, div = ("min", 60) if lo >= 120 else ("s", 1)
+    a, b = lo / div, hi / div
+    span = f"{a:g}" if a == b else f"{a:g}\N{EN DASH}{b:g}"
+    return f"every {span} {unit}"
+
+
+def map_card(  # noqa: PLR0913, PLR0917 - the card's own parts, as the tools call it
+    spots: SpotData,
+    map_id: str,
+    name: str,
+    street: str,
+    only: str | None = None,
+    extra: str | None = None,
+) -> Card | None:
+    """The hover card for a map; None when there is neither a picture nor monsters.
+    `only` keeps one monster's line and dots."""
+    m = spots.maps.get(map_id)
+    picture = spots.picture(map_id) if m else None
+    at: dict[str, list[tuple[int, int]]] = {}
+    counts: dict[str, int] = {}
+    if m:
+        for mob, x, y in m.spawns:
+            if mob in spots.monsters and only in (None, mob):
+                at.setdefault(mob, []).append((x, y))
+        counts = {i: len(v) for i, v in at.items()}
+    else:
+        counts = {
+            i: n
+            for i, n in spots.counts.get(map_id, {}).items()
+            if i in spots.monsters and only in (None, i)
+        }
+    if not counts and picture is None:
+        return None
+    order = sorted(counts, key=lambda i: (-counts[i], spots.monsters[i].name))
+    mobs, dots = [], []
+    for n, i in enumerate(order):
+        mon, colour = spots.monsters[i], DOT_COLOURS[0 if only else n % len(DOT_COLOURS)]
+        if m:
+            line = f"{counts[i]} spawn spot{'s' * (counts[i] != 1)}"
+            if i in m.respawn:
+                line += f" · respawns {respawn_text(*m.respawn[i])}"
+            dots += [(x, y, colour) for x, y in at[i]]
+        else:
+            line = f"{counts[i]} spawn{'s' * (counts[i] != 1)}"
+        stats = f"Lv {mon.level} · {mon.hp:,} HP · {mon.exp:,} EXP"
+        mobs.append(CardMob(i, mon.name, stats, line, colour))
+    cap = CAP.format(m.cap) if m and m.cap else None
+    size = m.size if m else (0, 0)
+    return Card(
+        name, street, picture, size, tuple(mobs), cap, tuple(dots), (extra,) if extra else ()
+    )
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    head = path.read_bytes()[:24]  # signature, IHDR length and tag, then width and height
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def npc_card(data: GameData, npc_id: int, map_title: str, shop: bool = False) -> Card | None:
+    """An NPC's card: its picture at its own size, and where it stands."""
+    npc = data.npcs.get(npc_id)
+    if npc is None:
+        return None
+    picture = data.npc_icon(npc_id)
+    size = _png_size(picture) if picture else (0, 0)
+    return Card(npc.name, map_title, picture, size, (), None, (), ("Sells it",) if shop else ())
 
 
 SEARCH_LIMIT = 20
