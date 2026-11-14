@@ -57,15 +57,20 @@ def window_title(wid: int) -> str:
 
 
 def client_rect_from(
-    bounds: dict, onscreen: bool, title_pt: float, scale: float
+    bounds: dict, onscreen: bool, title_pt: float, scale: float, origin=(0.0, 0.0)
 ) -> tuple[int, int, int, int] | None:
-    """Window bounds in points -> client area (left, top, width, height) in pixels."""
+    """Window bounds in points -> client area (left, top, width, height) in pixels.
+
+    Pixels as Qt counts them, as on Windows: the screen's top-left `origin` (points) as
+    is, scaled only from there.
+    """
     h = bounds["Height"] - title_pt
     if not onscreen or h <= 0 or bounds["Width"] <= 0:
         return None
+    ox, oy = origin
     return (
-        round(bounds["X"] * scale),
-        round((bounds["Y"] + title_pt) * scale),
+        round(ox + (bounds["X"] - ox) * scale),
+        round(oy + (bounds["Y"] + title_pt - oy) * scale),
         round(bounds["Width"] * scale),
         round(h * scale),
     )
@@ -107,6 +112,7 @@ def client_rect(wid: int) -> tuple[int, int, int, int] | None:
         bool(info.get("kCGWindowIsOnscreen")),
         0 if borderless else _title_bar_pt(),
         screen.backingScaleFactor(),
+        (f.origin.x, NSScreen.screens()[0].frame().size.height - f.origin.y - f.size.height),
     )
 
 
