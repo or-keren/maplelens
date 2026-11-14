@@ -274,7 +274,7 @@ def _entries(data: GameData, maps: Mapping[str, tuple[str, str]]):
     for item in data.items.values():
         yield "item", item.name, (item.id,), _item_line(data, item), ""
     for map_id, (name, street) in maps.items():
-        yield "map", name, (map_id,), f"Map · {name}", street
+        yield "map", name, (map_id,), f"Map · {street}", street
 
 
 def search(

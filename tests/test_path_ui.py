@@ -476,9 +476,8 @@ def test_stale_map_after_3s_unreadable(make):
 def test_duplicate_names_show_their_street(make):
     tool = make()
     tool._search.setText("twin")
-    assert set(names(tool._matches)) == {"Twin · Hill", "Twin · Dale"}
-    tool._search.setText("cherry")
-    assert names(tool._matches)[0] == "Cherry"  # unique: the name alone
+    assert names(tool._matches) == ["Twin", "Twin"]
+    assert set(lines(tool._matches)) == {"Map · Hill", "Map · Dale"}  # told apart by street
 
 
 def test_tool_errors_do_not_stop_the_other_tool(make, capsys):
@@ -687,7 +686,7 @@ def test_search_shows_kinds(make):
     tool._search.setText("cherry")
     got = [(m.kind, m.name, m.line) for m in matches(tool._matches)]
     assert got == [
-        ("map", "Cherry", "Map · Cherry"),
+        ("map", "Cherry", "Map · Road"),
         ("monster", "Cherry Ghost", "Monster · Lv 5 · 0 maps"),
         ("item", "Cherry Coin", "Item · dropped by Cherry Ghost"),
     ]

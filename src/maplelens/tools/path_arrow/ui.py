@@ -359,12 +359,8 @@ class PathArrowTool:
         self._matches.clear()
         names = {i: (m.name, m.street) for i, m in self.maps.items()}
         hits = search(self.game, names, text)
-        twins = [m.name for m in hits if m.kind == "map"]
         for m in hits:
-            name = m.name
-            if m.kind == "map" and twins.count(m.name) > 1:
-                name += f" · {self.maps[m.ids[0]].street}"  # which of the two
-            self._add(self._matches, match_row(self.game, self.spots, m, name, self._row_w()), m)
+            self._add(self._matches, match_row(self.game, self.spots, m, self._row_w()), m)
         self._show_rows(self._matches)
         self._render()
 
@@ -373,10 +369,9 @@ class PathArrowTool:
         goes there. A monster, an item or any other NPC lists its places instead."""
         self._set_typing(False)
         self._matches.setCurrentItem(item)
-        name = self._matches.itemWidget(item).name
         if self._goal() is not None:
             self._search.blockSignals(True)  # re-searching could make another row current
-            self._search.setText(name)
+            self._search.setText(item.data(Qt.UserRole).name)
             self._search.blockSignals(False)
             self._matches.hide()
         else:
@@ -384,9 +379,7 @@ class PathArrowTool:
             if self._picked_row:
                 self._picked_row.hide()  # out of the line now, deleted soon
                 self._picked_row.deleteLater()
-            self._picked_row = match_row(
-                self.game, self.spots, self._picked, name, self._picked_w()
-            )
+            self._picked_row = match_row(self.game, self.spots, self._picked, self._picked_w())
             self._picked_box.layout().insertWidget(0, self._picked_row, 1)
             for w in (self._search, self._matches):
                 w.hide()
@@ -479,8 +472,8 @@ class PathArrowTool:
             None,
         )
         if item is None:
-            match = Match("map", (map_id,), m.name, f"Map · {m.name}")
-            row = match_row(self.game, self.spots, match, m.name, self._row_w())
+            match = Match("map", (map_id,), m.name, f"Map · {m.street}")
+            row = match_row(self.game, self.spots, match, self._row_w())
             item = self._add(self._matches, row, match)
         self._pick(item)
         self._begin((map_id, at, label))

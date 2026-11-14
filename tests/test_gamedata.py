@@ -106,8 +106,8 @@ def test_search_lines():
     assert _lines("mixed")["Mixed Thing"] == "Item · 2 shops · dropped by Pig"
     assert _lines("mina")["Mina"] == "NPC · Henesys Department Store"
     assert _lines("nobody")["Nobody"] == "NPC · no known place"
-    assert _lines("maple road")["Maple Road"] == "Map · Maple Road"
-    assert _lines("maple island")["Maple Road"] == "Map · Maple Road"
+    assert _lines("maple road")["Maple Road"] == "Map · Maple Island"  # the street
+    assert _lines("maple island")["Maple Road"] == "Map · Maple Island"
     assert _lines("roger")["Roger"] == "NPC · 2 maps"
 
 

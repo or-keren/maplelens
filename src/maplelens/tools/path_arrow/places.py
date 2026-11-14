@@ -32,8 +32,8 @@ def _pixmap(path: Path | None, crop: bool) -> QPixmap:
 
 
 class PictureRow(QWidget):
-    """A list row; its labels are cut to `fit`'s width, the name in the middle (a repeated
-    map name keeps its street)."""
+    """A list row; its labels are cut to `fit`'s width, the name in the middle (neighbours
+    differ at the end: Snail Hunting Ground I, II)."""
 
     def __init__(self, name: str, line: str, pixmap: QPixmap, width: int, dim: bool = False):
         super().__init__()
@@ -64,7 +64,7 @@ class PictureRow(QWidget):
             label.setText(QFontMetrics(label.font()).elidedText(text, mode, room))
 
 
-def match_row(game: GameData, spots: SpotData, m: Match, name: str, width: int) -> PictureRow:
+def match_row(game: GameData, spots: SpotData, m: Match, width: int) -> PictureRow:
     if m.kind == "monster":
         path = next(filter(None, (spots.icon(str(i)) for i in m.ids)), None)
     elif m.kind == "item":
@@ -73,7 +73,7 @@ def match_row(game: GameData, spots: SpotData, m: Match, name: str, width: int) 
         path = game.npc_icon(m.ids[0])
     else:
         path = spots.picture(m.ids[0])
-    return PictureRow(name, m.line, _pixmap(path, m.kind == "map"), width)
+    return PictureRow(m.name, m.line, _pixmap(path, m.kind == "map"), width)
 
 
 def _away(hops: int | None, known: bool) -> str | None:
