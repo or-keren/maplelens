@@ -7,9 +7,6 @@ from pathlib import Path
 
 DATA = Path(__file__).parents[2] / "data" / "classes.json"
 MAPS = Path(__file__).parents[2] / "data" / "maps.json"
-SPOTS = Path(__file__).parents[2] / "data" / "monsters.json"
-PICTURES = Path(__file__).parents[2] / "data" / "map_pictures"
-ICONS = Path(__file__).parents[2] / "data" / "monster_icons"
 # The job reader may say "Thief"; the records say "Rogue".
 ALIASES = {"Thief": "Rogue"}
 STATS = ("STR", "DEX", "INT", "LUK")
@@ -196,53 +193,3 @@ def load(path: Path = DATA, maps_path: Path = MAPS) -> ClassData:
         for j in raw["jobs"]
     }
     return ClassData(jobs, skills, items)
-
-
-@dataclass(frozen=True)
-class Monster:
-    name: str
-    level: int
-    hp: int
-    exp: int
-
-
-@dataclass(frozen=True)
-class MapSpawns:
-    size: tuple[int, int]  # the shipped picture's pixels
-    cap: int | None
-    spawns: tuple[tuple[str, int, int], ...]  # (monster id, x, y) in the picture's pixels
-    respawn: dict[str, tuple[float, float]]  # monster id -> (shortest, longest) seconds
-
-
-@dataclass(frozen=True)
-class SpotData:
-    maps: dict[str, MapSpawns]
-    monsters: dict[str, Monster]
-    pictures: Path
-    icons: Path
-
-    def picture(self, map_id: str) -> Path | None:
-        p = self.pictures / f"{map_id}.webp"
-        return p if p.is_file() else None
-
-    def icon(self, monster: str) -> Path | None:
-        p = self.icons / f"{monster}.png"
-        return p if p.is_file() else None
-
-
-@cache
-def load_spots(path: Path = SPOTS, pictures: Path = PICTURES, icons: Path = ICONS) -> SpotData:
-    raw = json.loads(path.read_text("utf-8"))
-    maps = {
-        i: MapSpawns(
-            (m["size"][0], m["size"][1]),
-            m.get("cap"),
-            tuple((mob, x, y) for mob, x, y in m["spawns"]),
-            {mob: (lo, hi) for mob, (lo, hi) in m.get("respawn", {}).items()},
-        )
-        for i, m in raw["maps"].items()
-    }
-    monsters = {
-        i: Monster(m["name"], m["level"], m["hp"], m["exp"]) for i, m in raw["monsters"].items()
-    }
-    return SpotData(maps, monsters, pictures, icons)

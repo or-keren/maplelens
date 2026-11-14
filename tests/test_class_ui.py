@@ -3,12 +3,13 @@ from pathlib import Path
 import pytest
 
 from maplelens import overlay
+from maplelens.gamedata import load_spots
 from maplelens.readers import Reading
 from maplelens.readers.skill_window import SkillRow, SkillWindow
 from maplelens.readers.stat_window import StatWindow
 from maplelens.readers.window import UNREADABLE
 from maplelens.store import DEFAULTS
-from maplelens.tools.class_helper.data import MAPS, load, load_spots
+from maplelens.tools.class_helper.data import MAPS, load
 
 SMALL = Path(__file__).parent / "fixtures" / "classes_small.json"
 SPOTS_SMALL = Path(__file__).parent / "fixtures" / "spots_small.json"

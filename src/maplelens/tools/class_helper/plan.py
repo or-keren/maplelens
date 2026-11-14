@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from maplelens.gamedata import SpotData
 from maplelens.tools.class_helper.data import (
     STATS,
     Advance,
@@ -14,7 +15,6 @@ from maplelens.tools.class_helper.data import (
     JobPlan,
     Place,
     Skill,
-    SpotData,
     SpStep,
     TrainRow,
 )
