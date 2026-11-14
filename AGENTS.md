@@ -37,12 +37,13 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
 - `src/maplelens/` — the package
   - `capture.py` (shared: `pick_window`) + `capture_win.py` / `capture_mac.py` — find the game window, grab its pixels
   - `readers/` — screenshot → value (`glyphs`, `ocr`, `exp`, `level`, `job`, `map_name`, `minimap_pos` (`read_view`), `stat_window`, `skill_window`, `quest_window`, `quest_tracker` (the game's Quest Helper panel); `read_all` in `__init__`, with `due` / `found` for which windows to read this tick: one that isn't on screen is searched one tick in four, the minimap every tick); numbers via glyph templates, words (map, class, skill names) via the system OCR: `ocr.py` (shared) + `ocr_win.py` / `ocr_mac.py`. The draggable game windows (`window.py`, shared) are read differently: scaled from the window's own corner, digits by correlation with a margin, since exact templates miss at most sub-pixel offsets
-  - `overlay.py` — the see-through `Layer` and draggable `Box` (its ••• menu button, `attach_menu`), the tab's `Row` (`on_hover` reports the mouse entering and leaving), `paint_box`; `overlay_mac.py` — the macOS panels
+  - `overlay.py` — the see-through `Layer` and draggable `Box` (its ••• menu button, `attach_menu`), the tab's `Row` (`on_hover` reports the mouse entering and leaving), `paint_box`, `FloatingWindow` (History's and Settings' setup: over the game, never taking the keyboard); `overlay_mac.py` — the macOS panels
+  - `settings_window.py` — the Settings window: General (built by the app) and a section per tool (`settings_section()`)
   - `data/maps.json` — the map data; `data/minimaps/` — minimap pictures; `data/item_icons/` — reward item pictures; `data/icon.ico` — the app icon (the exe, Setup and the tray)
   - `data/monsters.json` — each map's monster cap, spawn spots and respawn timers, and monster stats (OSMS ids); `data/map_pictures/`, `data/monster_icons/` — their pictures
   - `data/classes.json` — per-job advice (training maps, AP/SP plans, gear)
   - `data/quests.json` — the quests (the NPCs, monsters and items each quest needs; event quests are left out)
-  - `store.py` — settings file and data folder
+  - `store.py` — settings file and data folder; `clean` puts a wrong saved value back to its default
   - `update.py` — the update check's pure part: GitHub's latest-release reply → `Release`, version compare, digest check (`MAPLELENS_UPDATE_REPO` overrides the repo)
   - `update_mac.py` — the Mac update helper: swaps the app from the downloaded dmg, then relaunches it
   - `reader.py` — the per-tick grab, trim and `read_all` (`read_game`), run here (`InlineReader`) or in a child process (`ProcessReader`)

@@ -28,6 +28,22 @@ def test_tool_flushes_open_segment_each_minute(monkeypatch, tmp_path):
     app.processEvents()
 
 
+def test_stopping_saves_the_visit_and_starts_afresh(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from maplelens.tools.exp_meter.ui import ExpMeterTool
+
+    QApplication.instance() or QApplication([])
+    conn = open_db(tmp_path / "h.db")
+    tool = ExpMeterTool(dict(DEFAULTS, boxes={}), conn)
+    _play(tool, 145)  # 6 minutes
+    before = history(conn)[0].active_s
+    tool.stop(1000 + 145 * 2.5)  # EXP turned off in Settings
+    assert history(conn)[0].active_s >= before  # the open visit was saved, as on quit
+    assert tool._meter.session() is None and tool._meter.rate(2000.0) is None  # a fresh meter
+
+
 def test_tool_skips_visits_under_five_minutes(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication

@@ -122,6 +122,21 @@ def test_training_rows_click_to_go_and_best_rate(make):
     assert tool.gone == ["000000001"]
 
 
+def test_with_path_off_no_row_goes_until_its_back_on(make):
+    tool = make(best_rate=lambda t: 1234.0 if t else None)
+    tool.update(R(level=12), RECT, 0)
+    tool.set_can_go(False)
+    trips = [r for r in rows(tool) if r.sub.startswith(("your best", "mobs Lv "))]
+    assert trips and not any(r.clickable for r in trips)
+    trips[0].click()
+    assert tool.gone == []
+    tool.set_can_go(True)  # live: no reading needed
+    first = next(r for r in rows(tool) if r.sub.startswith("your best"))
+    assert first.clickable
+    first.click()
+    assert tool.gone == ["000000001"]
+
+
 def test_row_without_a_map_is_not_clickable(make):
     tool = make()
     tool.update(R(level=15), RECT, 0)
@@ -315,6 +330,20 @@ def test_marks_can_be_turned_off(make):
     assert tool.marks() == []  # stays off; the tab still reads the window
     tool.set_marks(True)
     assert tool.marks() == [("5 here", pos(*PLUS["LUK"]))]
+
+
+def test_the_settings_section_turns_the_marks_off(make):
+    from PySide6.QtWidgets import QCheckBox
+
+    from maplelens.tools.class_helper.ui import MARKS
+
+    tool = make()
+    tool.update(R(level=20, stats=SW(level=20, ap=5, base=s(4, 25, 4, 30))), RECT, 0)
+    section = tool.settings_section()  # held: the checkbox lives as long as its section
+    (box,) = section.findChildren(QCheckBox)
+    assert box.text() == MARKS and box.isChecked()
+    box.setChecked(False)
+    assert tool.marks() == [] and tool._settings["class_marks"] is False
 
 
 def test_marks_follow_and_hide(make):

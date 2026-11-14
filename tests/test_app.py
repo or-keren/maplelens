@@ -653,15 +653,10 @@ def test_from_source_there_is_no_update_check(qt_box, monkeypatch):
     assert _menu(qt_box) == ["Quit MapleLens"]  # neither update item
 
 
-def test_the_installed_app_has_both_items_above_quit(qt_box, installed):
+def test_the_installed_app_adds_no_menu_items(qt_box, installed):
     settings = {"update_check": True, "update_dismissed": None}
     app.update_check(qt_box, settings, lambda: None, set(), 0.0, _Fetch(NEWER))
-    assert _menu(qt_box) == [
-        "Check for updates now",
-        "Check for updates automatically",
-        "Quit MapleLens",
-    ]
-    assert qt_box.actions()[1].isCheckable() and qt_box.actions()[1].isChecked()
+    assert _menu(qt_box) == ["Quit MapleLens"]  # its controls are in Settings
 
 
 def test_toggle_off_survives_a_restart_and_check_now_still_works(qt_box, installed, tmp_path):
@@ -673,20 +668,16 @@ def test_toggle_off_survives_a_restart_and_check_now_still_works(qt_box, install
     def save():
         save_settings(path, settings)
 
-    # kept, as main keeps its own: the menu items call into it
     first = app.update_check(qt_box, settings, save, set(), 0.0, _Fetch())
-    qt_box.actions()[1].trigger()  # untick "Check for updates automatically"
+    first.set_auto(False)  # Settings' "Check for updates automatically", unticked
     assert load_settings(path)["update_check"] is False
-    assert first is not None
 
-    for a in qt_box.actions()[:-1]:  # "restart": a fresh menu, settings read from the file
-        qt_box.removeAction(a)
-    fetch, settings = _Fetch(NEWER), load_settings(path)
+    fetch, settings = _Fetch(NEWER), load_settings(path)  # "restart": settings from the file
     check = app.update_check(qt_box, settings, lambda: None, set(), 0.0, fetch)
     _run(check, 10 * app.UpdateCheck.EVERY_S)
     assert fetch.calls == 0  # no automatic request
-    assert not qt_box.actions()[1].isChecked()
-    qt_box.actions()[0].trigger()  # "Check for updates now"
+    assert settings["update_check"] is False  # what Settings' checkbox starts from
+    check.check_now()  # Settings' "Check now"
     _run(check, 10 * app.UpdateCheck.EVERY_S + 1)
     assert fetch.calls == 1
 
@@ -696,14 +687,13 @@ def test_toggling_back_on_resumes_the_automatic_checks(qt_box, installed):
     check = app.update_check(qt_box, settings, lambda: None, set(), 0.0, fetch)
     _run(check, 10.0)
     assert fetch.calls == 0
-    qt_box.actions()[1].trigger()
+    check.set_auto(True)
     _run(check, 11.0)
     assert fetch.calls == 1
 
 
-def _check_now(check, box, now):
-    [item] = [a for a in box.actions() if a.text() == "Check for updates now"]
-    item.trigger()
+def _check_now(check, _box, now):
+    check.check_now()  # Settings' "Check now"
     check._thread.join(5)
     check.poll(now)
 
@@ -951,11 +941,7 @@ def test_the_installed_mac_app_gets_an_update_check(qt_box, monkeypatch, tmp_pat
     settings = {"update_check": True, "update_dismissed": None}
     check = app.update_check(qt_box, settings, lambda: None, set(), 0.0, _Fetch(DMG))
     assert isinstance(check, app.UpdateCheck)
-    assert _menu(qt_box) == [
-        "Check for updates now",
-        "Check for updates automatically",
-        "Quit MapleLens",
-    ]
+    assert _menu(qt_box) == ["Quit MapleLens"]  # its controls are in Settings
     assert list(folder.iterdir()) == []  # the old dmg cleared, the result read once
     assert qt_box._notice_text.text() == app.UPDATE_FAILED
     assert check._install is update_mac.install_update
@@ -1654,3 +1640,147 @@ def test_a_loading_screen_leaves_the_box_where_the_bars_put_it(hide, game_found,
     tick.reader = types.SimpleNamespace(ask=lambda job: None, take=lambda: None)
     tick.run(3.0)  # an answer still on its way
     assert box.pos() == at
+
+
+def test_a_tick_skips_the_tools_turned_off(hide, game_found):
+    box, layer, _, shown = hide
+    tick, exp = _tick(box, layer, shown)
+    tick.settings.update(exp_on=False, class_on=False)
+    tick.run(5.0)
+    assert exp.updates == [] and tick.cls.updates == []
+    assert tick.path.updates == [(READING, game_found, 5.0)]
+    assert tick.quest.updates == [(READING, game_found, 5.0)]
+    tick.settings["exp_on"] = True
+    tick.run(6.0)
+    assert exp.updates == [(READING, game_found, 6.0)]
+
+
+def test_a_tick_doesnt_read_an_off_tools_windows(hide, game_found, monkeypatch):
+    box, layer, _, shown = hide
+    dues = []
+    monkeypatch.setattr(reader, "read_all", lambda f, now, due=None: dues.append(due) or READING)
+    tick, _ = _tick(box, layer, shown)
+    tick.settings.update(class_on=False, quests_on=False)
+    for i in range(8):  # two turns of every closed window
+        tick.run(float(i))
+    assert not any({"stats", "skills", "quest", "tracker"} & set(d) for d in dues)
+
+
+def test_quests_off_never_switches_the_box_to_quests():
+    box = _FocusBox(1)
+    f = app.QuestFocus(box, 3)
+    for _ in range(3):  # a quest window open in the game; Quests is off, so OFF stands in
+        app.update_tools(box, _Quiet(), _Quiet(), _Quiet(), app.OFF, f, "r", None, 0.0, set())
+    assert box.selects == []
+
+
+class _Stops(_Quiet):
+    def __init__(self):
+        self.calls = []
+        self.can_go = True
+        self.arrow = types.SimpleNamespace(hide=lambda: self.calls.append("arrow hidden"))
+
+    def set_can_go(self, on):
+        self.can_go = on
+
+    def stop(self, *now):
+        self.calls.append(("stop", *now))
+
+    def hide_marks(self):
+        self.calls.append("marks hidden")
+
+
+@pytest.fixture
+def switches(qt_box):
+    from PySide6.QtWidgets import QLabel
+
+    from maplelens.settings_window import SettingsWindow, ToolSection
+
+    pages = []
+    for title in ("EXP", "Path", "Class", "Quests"):
+        pages.append(QLabel(title))
+        qt_box.add_tab(title, pages[-1])
+    footer = QLabel("pin")
+    qt_box.add_footer(footer, 0)
+    qt_box.set_footer_shown(True)
+    sections = {t: QLabel(t) for t in ("Path", "Class")}
+    window = SettingsWindow([ToolSection(t, True, w) for t, w in sections.items()])
+    settings, saves = {}, []
+    exp, path, cls, quest = _Stops(), _Stops(), _Stops(), _Stops()
+    save = lambda: saves.append(dict(settings))  # noqa: E731
+    sw = app.ToolSwitches(settings, save, qt_box, exp, path, cls, quest)
+    sw.apply(window, ["EXP", "Path", "Class", "Quests"])
+    return types.SimpleNamespace(
+        sw=sw, box=qt_box, settings=settings, saves=saves, exp=exp, path=path, cls=cls,
+        quest=quest, sections=sections, footer=footer,
+    )  # fmt: skip
+
+
+def test_turning_path_off_ends_the_trip_and_greys_its_section(switches):
+    s = switches
+    s.box.select(1)
+    s.sw.set(1, False, 9.0)
+    assert s.settings["path_on"] is False and s.saves[-1]["path_on"] is False
+    assert s.path.calls == [("stop",), "arrow hidden"]
+    assert not s.box._tab_buttons[1].isVisibleTo(s.box) and s.box.current == 0
+    assert not s.sections["Path"].isEnabled()
+    s.sw.set(1, True, 10.0)
+    assert s.box._tab_buttons[1].isVisibleTo(s.box) and s.sections["Path"].isEnabled()
+
+
+def test_turning_exp_off_saves_it_and_hides_the_pinned_line(switches):
+    s = switches
+    s.box.select(2)
+    assert s.footer.isVisibleTo(s.box)
+    s.sw.set(0, False, 9.0)
+    assert s.exp.calls == [("stop", 9.0)]
+    assert not s.footer.isVisibleTo(s.box)
+    s.sw.set(0, True, 10.0)
+    assert s.footer.isVisibleTo(s.box)  # pin_exp is still on
+
+
+def test_path_off_makes_class_and_quests_rows_inert(switches):
+    s = switches
+    assert s.cls.can_go and s.quest.can_go
+    s.sw.set(1, False, 9.0)
+    assert not s.cls.can_go and not s.quest.can_go
+    s.sw.set(1, True, 10.0)
+    assert s.cls.can_go and s.quest.can_go
+
+
+def test_turning_class_off_hides_its_marks(switches):
+    switches.sw.set(2, False, 9.0)
+    assert switches.cls.calls == ["marks hidden"]
+
+
+def test_tools_saved_off_start_hidden(qt_box):
+    from PySide6.QtWidgets import QLabel
+
+    for title in ("EXP", "Path", "Class", "Quests"):
+        qt_box.add_tab(title, QLabel(title))
+    settings = {"quests_on": False, "path_on": False}
+    cls, quest = _Stops(), _Stops()
+    sw = app.ToolSwitches(settings, lambda: None, qt_box, _Stops(), _Stops(), cls, quest)
+    sw.apply(None, [])
+    assert not qt_box._tab_buttons[3].isVisibleTo(qt_box)
+    assert qt_box._tab_buttons[2].isVisibleTo(qt_box)
+    assert not cls.can_go and not quest.can_go  # Path saved off: no trips from the start
+
+
+def test_tool_sections_follow_the_tabs_with_each_tools_own_settings(qt_box):
+    from PySide6.QtWidgets import QLabel
+
+    class Tool:
+        def __init__(self, title, has):
+            self.title = title
+            if has:
+                self.settings_section = lambda: QLabel(title)
+
+    tools = [Tool("EXP", False), Tool("Path", True), Tool("Class", True), Tool("Quests", False)]
+    got = app.tool_sections(tools, {"class_on": False})
+    assert [(t.title, t.on, t.body is not None) for t in got] == [
+        ("EXP", True, False),
+        ("Path", True, True),
+        ("Class", False, True),
+        ("Quests", True, False),
+    ]

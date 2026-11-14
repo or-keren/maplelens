@@ -73,6 +73,52 @@ def test_tab_dot(monkeypatch):
     assert not box._tab_dots[1].isVisibleTo(box)
 
 
+def _three_tabs(monkeypatch, tab_width=None):
+    from PySide6.QtWidgets import QLabel
+
+    from maplelens.overlay import Box
+
+    _box(monkeypatch)
+    box = Box("t", {"tab_width": tab_width}, lambda: None)
+    pages = [QLabel(t) for t in "abc"]
+    for title, page in zip("ABC", pages, strict=True):
+        box.add_tab(title, page)
+    return box, pages
+
+
+def test_a_hidden_tab_loses_its_button_and_the_others_keep_their_indexes(monkeypatch):
+    box, (_a, _b, c) = _three_tabs(monkeypatch)
+    box.set_tab_shown(1, False)
+    assert not box._tab_buttons[1].isVisibleTo(box)
+    box.select(2)
+    assert c.isVisibleTo(box) and box.current == 2
+    box.set_tab_dot(2, True)
+    assert box._tab_dots[2].isVisibleTo(box)
+
+
+@pytest.mark.parametrize("tab_width", [None, 300])
+def test_hiding_the_open_tab_shows_the_first_one_still_on(monkeypatch, tab_width):
+    box, (a, b, _c) = _three_tabs(monkeypatch, tab_width)
+    box.show()
+    box.select(0)
+    width = box.width()
+    box.set_tab_shown(0, False)
+    assert box.current == 1 and b.isVisibleTo(box) and not a.isVisibleTo(box)
+    box.adjustSize()
+    assert box.width() == width  # the pages' fixed width sizes the box, not the strip
+
+
+def test_select_and_a_dot_leave_a_hidden_tab_hidden(monkeypatch):
+    box, (_a, _b, c) = _three_tabs(monkeypatch)
+    box.set_tab_shown(2, False)
+    box.select(2)  # QuestFocus asking for a tab that's off
+    assert box.current == 0 and not c.isVisibleTo(box)
+    box.set_tab_dot(2, True)
+    assert not box._tab_dots[2].isVisibleTo(box)
+    box.set_tab_shown(2, True)  # back on: the dot it was given shows
+    assert box._tab_buttons[2].isVisibleTo(box) and box._tab_dots[2].isVisibleTo(box)
+
+
 def _footer_box(monkeypatch):
     """Two tabs, a footer owned by tab 0, turned on, on tab 1."""
     from PySide6.QtWidgets import QLabel
@@ -92,6 +138,14 @@ def test_footer_shows_on_other_tabs_only_when_on(monkeypatch):
     assert line.isVisibleTo(box)
     box.set_footer_shown(False)
     assert not line.isVisibleTo(box)
+
+
+def test_hiding_the_footers_tab_hides_the_footer(monkeypatch):
+    box, line = _footer_box(monkeypatch)
+    box.set_tab_shown(0, False)  # EXP off: no pinned EXP line either
+    assert not line.isVisibleTo(box)
+    box.set_tab_shown(0, True)
+    assert line.isVisibleTo(box)
 
 
 def test_footer_follows_select(monkeypatch):

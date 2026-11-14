@@ -1,7 +1,6 @@
 """The EXP meter tool: a tab with live numbers and a History window."""
 
 import sqlite3
-import sys
 import time
 from collections.abc import Callable, Collection
 
@@ -25,7 +24,7 @@ from maplelens.overlay import (
     TAB_W,
     VALUE_COLOR,
     VALUE_PT,
-    native_setup,
+    FloatingWindow,
     secondary_button,
     text_label,
 )
@@ -61,7 +60,7 @@ class _Item(QTableWidgetItem):
 JobLine = Callable[[str], Collection[str]]
 
 
-class HistoryWindow(QWidget):
+class HistoryWindow(FloatingWindow):
     """The "Best for you now" strip above the per-map/class/level table."""
 
     def __init__(self, conn: sqlite3.Connection, job_line: JobLine = lambda j: {j}):
@@ -80,14 +79,6 @@ class HistoryWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(self._best)
         layout.addWidget(table, 1)
-        self.setAttribute(Qt.WA_QuitOnClose, False)  # closing it must not end the app
-        # Over the game, leaving it the keyboard, as the box does. On the Mac, native_setup
-        # makes it a panel that does both.
-        self.setWindowFlag(Qt.Tool)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        if sys.platform != "darwin":
-            self.setWindowFlag(Qt.WindowStaysOnTopHint)
-            self.setWindowFlag(Qt.WindowDoesNotAcceptFocus)
         self.resize(880, 460)
 
     def _show_best(self, job: str | None, level: int | None) -> None:
@@ -126,10 +117,6 @@ class HistoryWindow(QWidget):
         table.setSortingEnabled(True)
         table.sortItems(len(_COLUMNS) - 1, Qt.DescendingOrder)
         table.resizeColumnToContents(0)  # map names in full
-
-    def showEvent(self, event):
-        native_setup(self)
-        super().showEvent(event)
 
 
 class PinLine(QWidget):
@@ -255,8 +242,7 @@ class ExpMeterTool:
 
     def _show_history(self) -> None:
         self._history.refresh(self._meter.job, self._meter.level)
-        self._history.show()
-        self._history.raise_()
+        self._history.open()
 
     def _save(self, now: float, *, flush_open: bool) -> None:
         def kept(seg) -> bool:
@@ -285,3 +271,12 @@ class ExpMeterTool:
     def shutdown(self, now: float) -> None:
         self._meter.close(now)
         self._save(now, flush_open=False)
+
+    def stop(self, now: float) -> None:
+        """Turned off in Settings: save as on quit, and start afresh when it's on again (the
+        session too, as after a restart)."""
+        self.shutdown(now)
+        self._meter = ExpMeter(self._settings["idle_cutoff_s"], self._settings["jump_factor"])
+        self._last_flush = self._exp_seen = None
+        self._show(box_lines(None, None, True))
+        self.pin_line.set_text(*pin_text(None, True))

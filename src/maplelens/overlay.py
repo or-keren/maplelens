@@ -3,7 +3,7 @@
 import sys
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QUrl
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, QUrl
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -266,6 +267,119 @@ def native_setup(widget: QWidget) -> None:
         overlay_mac.make_panel(widget)
 
 
+DIM = "#5b6678"  # a setting greyed out: its tool is off
+
+
+class _PaintedCheck(QCheckBox):
+    """A checkbox drawn in the box's colours; its whole row takes the click, and it never
+    takes focus."""
+
+    _MARK_W = 14  # the drawn mark's width; the text starts after it and a gap
+    _GAP = 8
+    _BOLD = False
+    _PT = LABEL_PT
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setFont(QFont(FONT, self._PT, QFont.Bold if self._BOLD else QFont.Normal))
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def sizeHint(self):  # noqa: N802 - Qt's name
+        fm = QFontMetrics(self.font())
+        w = self._MARK_W + self._GAP + fm.horizontalAdvance(self.text()) + 2
+        return QSize(w, max(fm.height(), 16) + 4)
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt's name
+        return self.sizeHint()
+
+    def hitButton(self, pos) -> bool:  # noqa: N802 - Qt's name
+        return self.rect().contains(pos)
+
+    def _text_color(self) -> str:
+        return VALUE_COLOR if self.isEnabled() else DIM
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        self._paint_mark(p, (self.height() - 16) / 2)
+        p.setPen(QColor(self._text_color()))
+        p.setFont(self.font())
+        x = self._MARK_W + self._GAP
+        p.drawText(QRectF(x, 0, self.width() - x, self.height()), Qt.AlignVCenter, self.text())
+
+    def _paint_mark(self, p: QPainter, top: float) -> None:
+        on, live = self.isChecked(), self.isEnabled()
+        fill = (ACCENT if live else DIM) if on else FIELD
+        p.setPen(QPen(QColor(fill if on else (EDGE if live else DIM)), 1))
+        p.setBrush(QColor(fill))
+        p.drawRoundedRect(QRectF(0.5, top + 1.5, 13, 13), 3, 3)
+        if on:
+            p.setPen(QPen(QColor(DARK), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPolyline([QPointF(3.5, top + 8), QPointF(6, top + 10.5), QPointF(10.5, top + 5)])
+
+
+class ToolSwitch(_PaintedCheck):
+    """A tool's on/off switch, heading its card in Settings: a small toggle, then its name.
+    Disabled, it keeps its look (the last tool on is locked, not off)."""
+
+    _MARK_W = 28
+    _BOLD = True
+    _PT = LABEL_PT + 1
+
+    def _text_color(self) -> str:
+        return VALUE_COLOR
+
+    def _paint_mark(self, p: QPainter, top: float) -> None:
+        on = self.isChecked()
+        p.setPen(QPen(QColor(ACCENT if on else EDGE), 1))
+        p.setBrush(QColor(ACCENT if on else FIELD))
+        p.drawRoundedRect(QRectF(0.5, top + 0.5, 27, 15), 7.5, 7.5)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(DARK if on else LABEL_COLOR))
+        p.drawEllipse(QRectF(15 if on else 3, top + 3, 10, 10))
+
+
+def setting_box(text: str, checked: bool, on_change: Callable[[bool], None]) -> QCheckBox:
+    """A checkbox for the Settings window: each click applies at once."""
+    box = _PaintedCheck(text)
+    box.setChecked(checked)
+    box.toggled.connect(on_change)
+    return box
+
+
+def tool_switch(text: str, checked: bool, on_change: Callable[[bool], None]) -> QCheckBox:
+    """A tool's on/off switch for the Settings window: each click applies at once."""
+    box = ToolSwitch(text)
+    box.setChecked(checked)
+    box.toggled.connect(on_change)
+    return box
+
+
+class FloatingWindow(QWidget):
+    """One of MapleLens's own windows (History, Settings): over the game, leaving it the
+    keyboard, as the box does. On the Mac, native_setup makes it a panel that does both.
+    Closing it doesn't end the app."""
+
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WA_QuitOnClose, False)
+        self.setWindowFlag(Qt.Tool)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        if sys.platform != "darwin":
+            self.setWindowFlag(Qt.WindowStaysOnTopHint)
+            self.setWindowFlag(Qt.WindowDoesNotAcceptFocus)
+
+    def open(self) -> None:
+        """Show it, or bring it forward if it's already open."""
+        self.show()
+        self.raise_()
+
+    def showEvent(self, event):
+        native_setup(self)
+        super().showEvent(event)
+
+
 OVERLAY = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
 
 
@@ -372,6 +486,8 @@ class Box(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._tab_buttons: list[QPushButton] = []
         self._tab_dots: list[QLabel] = []
+        self._tab_shown: list[bool] = []  # a tab turned off keeps its index, only hidden
+        self._dot_on: list[bool] = []  # the dot each tab was given, shown while the tab is
         self._strip_row = QWidget()  # holds the strip, so it hides as one
         self._strip = QHBoxLayout(self._strip_row)
         self._strip.setContentsMargins(0, 0, 0, 0)
@@ -494,6 +610,8 @@ class Box(QWidget):
         dot.hide()
         self._tab_buttons.append(button)
         self._tab_dots.append(dot)
+        self._tab_shown.append(True)
+        self._dot_on.append(False)
         at = self._strip.count() - 1  # before the trailing stretch
         self._strip.insertWidget(at, button)
         self._strip.insertWidget(at + 1, dot, 0, Qt.AlignVCenter)
@@ -505,6 +623,9 @@ class Box(QWidget):
         return self._current
 
     def select(self, index: int) -> None:
+        """Show tab `index`; a hidden tab can't be shown, and the box stays where it is."""
+        if not self._tab_shown[index]:
+            return
         self._current = index
         for j, b in enumerate(self._tab_buttons):
             color, line = (VALUE_COLOR, ACCENT) if j == index else (LABEL_COLOR, "transparent")
@@ -530,7 +651,10 @@ class Box(QWidget):
     def _show_footer(self) -> None:
         if self._footer is not None:
             tabs = not self._about_open and self._status_text is None
-            self._footer.setVisible(self._footer_on and tabs and self._current != self._footer_tab)
+            owner = self._footer_tab
+            mine = 0 <= owner < len(self._tab_shown) and not self._tab_shown[owner]
+            on = self._footer_on and not mine  # its tab turned off: the line goes with it
+            self._footer.setVisible(on and tabs and self._current != owner)
 
     def set_status(self, text: str | None) -> None:
         """Show `text` in place of the tabs; None brings the tabs back.
@@ -600,7 +724,20 @@ class Box(QWidget):
             on_dismiss()
 
     def set_tab_dot(self, index: int, on: bool) -> None:
-        self._tab_dots[index].setVisible(on)
+        self._dot_on[index] = on
+        self._tab_dots[index].setVisible(on and self._tab_shown[index])
+
+    def set_tab_shown(self, index: int, on: bool) -> None:
+        """Hide tab `index` (its button, dot and page), or show it again. The other tabs keep
+        their indexes. Hiding the open tab shows the first one still shown."""
+        self._tab_shown[index] = on
+        self._tab_buttons[index].setVisible(on)
+        self._tab_dots[index].setVisible(on and self._dot_on[index])
+        if not on and self._current == index:
+            first = next((i for i, shown in enumerate(self._tab_shown) if shown), None)
+            if first is not None:
+                self.select(first)
+        self._show_footer()
 
     def allow_typing(self, on: bool) -> None:
         """Let the box take keyboard focus (only while a text field needs it).

@@ -215,6 +215,18 @@ def test_row_click_goes(make):
     assert tool.calls["go"] == [(SNAIL_MAP, None, None), (TOWN, (-46, 280), "Heena")]
 
 
+def test_with_path_off_no_target_row_goes(make):
+    tool = make()
+    tool.update(opened(), RECT, 0)
+    tool.set_can_go(False)
+    assert rows(tool) and not any(r.clickable for r in rows(tool))
+    for r in rows(tool):
+        r.click()
+    assert tool.calls["go"] == []
+    tool.set_can_go(True)
+    assert all(r.clickable for r in rows(tool))
+
+
 @pytest.mark.parametrize(
     "n, sub", [(0, "Going · on this map"), (1, "Going · 1 map away"), (2, "Going · 2 maps away")]
 )

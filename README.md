@@ -117,10 +117,15 @@ close it.
 **The update check talks to GitHub:** a few seconds after it starts and then once a day,
 MapleLens sends one HTTPS request to GitHub's API for the latest release. The request
 carries `MapleLens/<version>` as its User-Agent and nothing about you or the game; the
-update itself is downloaded from GitHub too. To turn the check off, click **•••** on the box
-and untick **Check for updates automatically**. **Check for updates now** still works
-when you want it. Only the installed app checks (Windows or Mac); running from source
-never does.
+update itself is downloaded from GitHub too. To turn the check off, click **•••** on the box,
+choose **Settings…** and untick **Check for updates automatically**. **Check now**, beside
+it, still works when you want it. Only the installed app checks (Windows or Mac); running
+from source never does.
+
+**Settings:** click **•••** on the box and choose **Settings…**. Every change applies at
+once. You can turn off a tool you don't use (its tab goes away; at least one stays on),
+change the path arrow's size and colour, or hide it (under Path), and turn off the AP/SP
+marks on the game's stat and skill windows (under Class).
 
 **Uninstalling:** Settings → Apps → MapleLens. Your settings and history stay in
 `%APPDATA%\MapleLens`; delete that folder to remove them too. If something goes wrong,

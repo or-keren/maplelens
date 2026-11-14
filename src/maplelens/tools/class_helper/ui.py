@@ -28,6 +28,7 @@ from maplelens.overlay import (
     game_to_layer,
     native_setup,
     paint_box,
+    setting_box,
     text_label,
 )
 from maplelens.readers import Reading, glyphs
@@ -269,6 +270,7 @@ class ClassHelperTool:
         self._builds_seen: tuple | None = None  # (job, build names, build) last told
         self._settings, self._changed = settings, on_settings_changed
         self._layer, self._go, self._best_rate = layer, go, best_rate
+        self._can_go = True  # trips can start: the Path tab is on
         self._data = load() if data is None else data
         self._job: str | None = None
         self._level: int | None = None
@@ -307,12 +309,30 @@ class ClassHelperTool:
         items, self._shown = self._shown, None  # the names are cut to the width
         self._render(items)
 
+    def set_can_go(self, on: bool) -> None:
+        """Whether a row's click can start a trip; with Path off it can't, so no row is
+        clickable and none shows the yellow angle."""
+        if on == self._can_go:
+            return
+        self._can_go = on
+        items, self._shown = self._shown, None
+        if items is not None:
+            self._render(items)
+
     def hide_marks(self) -> None:
         for m in self._pool:
             m.hide()
 
+    def settings_section(self) -> QWidget:
+        """The Class section of the Settings window."""
+        section = QWidget()
+        rows = QVBoxLayout(section)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.addWidget(setting_box(MARKS, self._settings.get("class_marks", True), self.set_marks))
+        return section
+
     def set_marks(self, on: bool) -> None:
-        """Turn the marks on the game's windows on or off (the menu's item); the tab stays."""
+        """Turn the marks on the game's windows on or off (Settings' checkbox); the tab stays."""
         if self._settings.get("class_marks", True) == on:
             return
         self._settings["class_marks"] = on
@@ -631,7 +651,7 @@ class ClassHelperTool:
             )
         if kind in {"row", "spot"}:
             _, name, sub, map_id, best, outline = item
-            go = (lambda m=map_id: self._go(m)) if map_id else None
+            go = (lambda m=map_id: self._go(m)) if map_id and self._can_go else None
             hover = None
             if kind == "spot" and map_id:
 

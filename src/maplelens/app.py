@@ -26,9 +26,10 @@ from maplelens import capture, update, update_mac
 from maplelens.overlay import ABOUT, MENU_MARK, Box, Layer
 from maplelens.reader import InlineReader, ProcessReader, Rect
 from maplelens.readers import due, found, glyphs, ocr, quest_window
+from maplelens.settings_window import GeneralSection, SettingsWindow, ToolSection
 from maplelens.store import data_dir, load_settings, save_settings
 from maplelens.tools.class_helper import data as class_data
-from maplelens.tools.class_helper.ui import MARKS, ClassHelperTool
+from maplelens.tools.class_helper.ui import ClassHelperTool
 from maplelens.tools.exp_meter.history import best_rate, open_db
 from maplelens.tools.exp_meter.ui import ExpMeterTool
 from maplelens.tools.path_arrow import maps
@@ -219,6 +220,106 @@ def update_tools(  # noqa: PLR0913, PLR0917 - one per tool plus the frame; a bun
     focus.update(quest.open)
     box.set_tab_dot(1, path.running)  # the tabs' indexes in build_box's tools list
     box.set_tab_dot(2, cls.dot)
+
+
+# Each tool's on/off setting, in the tabs' order (build_box's list): index = tab index
+TOOL_KEYS = ("exp_on", "path_on", "class_on", "quests_on")
+# The game windows only one tool reads: left unread while it's off
+_WINDOWS = {
+    "class_on": frozenset({"stats", "skills"}),
+    "quests_on": frozenset({"quest", "tracker"}),
+}
+
+
+class _Off:
+    """A tool turned off, in its place at the tick: nothing runs, nothing shows."""
+
+    running = dot = open = False
+
+    def update(self, *_) -> None:
+        pass
+
+
+OFF = _Off()
+
+
+def tool_on(settings: dict, key: str) -> bool:
+    return settings.get(key, True)
+
+
+def unread(settings: dict) -> frozenset[str]:
+    """The game windows of the tools turned off, which the reader isn't asked for."""
+    off = [parts for key, parts in _WINDOWS.items() if not tool_on(settings, key)]
+    return frozenset().union(*off)
+
+
+def tool_sections(tools: list, settings: dict) -> list[ToolSection]:
+    """Each tool's card for the Settings window, in the tabs' order: its switch, and its own
+    settings when it has any."""
+    return [
+        ToolSection(
+            t.title,
+            tool_on(settings, key),
+            t.settings_section() if hasattr(t, "settings_section") else None,
+        )
+        for t, key in zip(tools, TOOL_KEYS, strict=True)
+    ]
+
+
+class ToolSwitches:
+    """Turning a tool off and on in Settings, live: its tab, what it draws, its section.
+
+    The tick passes OFF in an off tool's place (Tick.run), so its update doesn't run.
+    """
+
+    def __init__(  # noqa: PLR0913, PLR0917 - the box, the settings and each tool that stops
+        self, settings: dict, save: Callable[[], None], box: Box, exp, path, cls, quest
+    ):
+        self._settings, self._save, self._box = settings, save, box
+        self._exp, self._path, self._cls, self._quest = exp, path, cls, quest
+        self._window: SettingsWindow | None = None  # its sections grey out with their tools
+        self._titles: list[str] = []
+
+    def apply(self, window: SettingsWindow | None, titles: list[str]) -> None:
+        """At start: hide the tabs, and grey the sections (headed `titles`, in the tabs'
+        order), of the tools saved off."""
+        self._window, self._titles = window, titles
+        for i, key in enumerate(TOOL_KEYS):
+            if not tool_on(self._settings, key):
+                self._show(i, False)
+        self._tell_can_go()
+
+    def set(self, index: int, on: bool, now: float) -> None:
+        key = TOOL_KEYS[index]
+        if tool_on(self._settings, key) == on:
+            return
+        self._settings[key] = on
+        if not on:
+            self._stop(key, now)
+        self._show(index, on)
+        if key == "path_on":
+            self._tell_can_go()
+        self._save()
+
+    def _tell_can_go(self) -> None:
+        """Class's and Quests' rows start trips on Path: only while Path is on."""
+        on = tool_on(self._settings, "path_on")
+        self._cls.set_can_go(on)
+        self._quest.set_can_go(on)
+
+    def _stop(self, key: str, now: float) -> None:
+        if key == "exp_on":
+            self._exp.stop(now)  # saved, as on quit
+        elif key == "path_on":
+            self._path.stop()
+            self._path.arrow.hide()
+        elif key == "class_on":
+            self._cls.hide_marks()
+
+    def _show(self, index: int, on: bool) -> None:
+        self._box.set_tab_shown(index, on)
+        if self._window is not None and index < len(self._titles):
+            self._window.set_section_enabled(self._titles[index], on)
 
 
 def quest_go(path_tool, select):
@@ -592,10 +693,10 @@ def update_check(  # noqa: PLR0913, PLR0917 - main's parts, plus the fetch tests
     now: float,
     fetch: Callable[[], dict] = fetch_latest,
 ) -> UpdateCheck | None:
-    """An UpdateCheck for the installed app (Windows or Mac), with its two menu items;
-    else None.
+    """An UpdateCheck for the installed app (Windows or Mac), else None. Its controls are in
+    Settings' General section (GeneralSection.add_updates).
 
-    Keep the result: Qt holds the menu items' links to it weakly. Clears the setups and
+    Keep the result: Qt holds the controls' links to it weakly. Clears the setups and
     dmgs earlier updates left in the data folder's `updates`; on the Mac also shows what
     the last update's helper left there.
     """
@@ -625,9 +726,6 @@ def update_check(  # noqa: PLR0913, PLR0917 - main's parts, plus the fetch tests
         platform=sys.platform,
         **mac,
     )
-    box.add_menu_item("Check for updates now", check.check_now, at=-1)  # above Quit
-    auto = settings.get("update_check", True)
-    box.add_toggle("Check for updates automatically", auto, check.set_auto, at=-1)
     if sys.platform == "darwin":
         check.show_result(update_mac.read_result(folder))
     return check
@@ -668,6 +766,12 @@ def box_menu(box: Box) -> QMenu:
 
 
 HIDE, SHOW = f"Hide {APP_NAME}", f"Show {APP_NAME}"
+SETTINGS = "Settings…"
+
+
+def add_settings(box: Box, window: SettingsWindow) -> None:
+    """Settings…, above Quit: added before add_hide, so it comes just before Hide."""
+    box.add_menu_item(SETTINGS, window.open, at=-1)
 
 
 class Shown:
@@ -796,6 +900,14 @@ class Tick:
             for p in found(got[1]):
                 self.seen_at[p] = turn
 
+    def tools(self) -> tuple:
+        """The four tools for update_tools, OFF in place of each one turned off."""
+        tools = (self.exp, self.path, self.cls, self.quest)
+        return tuple(
+            t if tool_on(self.settings, key) else OFF
+            for t, key in zip(tools, TOOL_KEYS, strict=True)
+        )
+
     def run(self, now: float) -> None:
         poll_updates(self.updates, now, self.seen)  # before the game lookup: shows with no game
         if self.box.about_open:  # its updates line follows the check
@@ -808,25 +920,15 @@ class Tick:
         if rect is None:
             self.hwnd = None  # gone or minimized: look again next tick
             self.layer.hide()
-            update_tools(
-                self.box,
-                self.exp,
-                self.path,
-                self.cls,
-                self.quest,
-                self.focus,
-                None,
-                None,
-                now,
-                self.seen,
-            )
+            update_tools(self.box, *self.tools(), self.focus, None, None, now, self.seen)
             return
         try:
             # take first: what the last job saw makes this job's `due` (InlineReader has nothing
             # to give yet; its answer comes from the second take)
             got = self.reader.take()
             self.remember(got, self.turn - 1)
-            self.reader.ask((self.hwnd, rect, now, due(self.turn, self.seen_at)))
+            parts = due(self.turn, self.seen_at) - unread(self.settings)  # off tools' windows
+            self.reader.ask((self.hwnd, rect, now, parts))
             if got is None:
                 got = self.reader.take()
                 self.remember(got, self.turn)
@@ -850,18 +952,7 @@ class Tick:
         self.layer.follow(rect)
         if self.shown.on:  # hidden by the player: the tools still run, nothing shows
             self.layer.show()
-        update_tools(
-            self.box,
-            self.exp,
-            self.path,
-            self.cls,
-            self.quest,
-            self.focus,
-            reading,
-            rect,
-            now,
-            self.seen,
-        )
+        update_tools(self.box, *self.tools(), self.focus, reading, rect, now, self.seen)
         self.box.place(rect)
 
 
@@ -947,13 +1038,24 @@ def main() -> int:
         path_tool.stop,
         path_tool.hops,
     )  # its go stays on the Quests tab while a trip runs
-    box = build_box(settings, save, [tool, path_tool, cls_tool, quest_tool], pick)
+    tools = [tool, path_tool, cls_tool, quest_tool]  # the tabs' order: indexes below rely on it
+    box = build_box(settings, save, tools, pick)
     box.add_footer(tool.pin_line, 0)  # the EXP line, under every tab but EXP's own
     box.set_footer_shown(tool.pinned)
     setup_screen_recording(box)
     add_build_menu(box, cls_tool)
-    box.add_toggle(MARKS, settings["class_marks"], cls_tool.set_marks, at=-1)
     updates = update_check(box, settings, save, seen, time.time())
+    general = GeneralSection()
+    if updates is not None:
+        general.add_updates(settings["update_check"], updates.set_auto, updates.check_now)
+    switches = ToolSwitches(settings, save, box, tool, path_tool, cls_tool, quest_tool)
+    settings_window = SettingsWindow(  # held: the menu links to it weakly
+        tool_sections(tools, settings),
+        lambda i, on: switches.set(i, on, time.time()),
+        general,
+    )
+    switches.apply(settings_window, [t.title for t in tools])
+    add_settings(box, settings_window)
     tray = make_tray(box, ICON, available=tray_available())  # held, or it leaves the tray
     shown = add_hide(box, layer, tray, click=sys.platform == "win32")
     add_about(box, updates)  # after Hide: just before Quit
