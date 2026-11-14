@@ -1,22 +1,25 @@
 import json
 from pathlib import Path
 
+from maplelens.gamedata import load_game
+from maplelens.readers.quest_tracker import target_names
 from maplelens.tools.quest_helper.data import DATA, ICONS, MAPS, load
 
 SMALL = Path(__file__).parent / "fixtures" / "quests_small.json"
+SMALL_GAME = Path(__file__).parent / "fixtures" / "quests_small_game"
 NO_ICON: list[int] = []  # reward items OSMS has no icon for (meowdb-only)
 MAP_JSON = json.loads(MAPS.read_text("utf-8"))
 
 
 def test_loads_small_fixture():
-    d = load(SMALL, MAPS)
+    d = load(SMALL, MAPS, load_game(SMALL_GAME / "monsters.json", SMALL_GAME / "game.json"))
     q = d.quests[1001]
     assert (q.giver, q.taker) == (2, 1)
     assert q.mobs == ((2, 3),) and q.items == ((4000001, 10), (4031000, 1))
     assert q.start_items == (4031000,)
     assert d.npcs[1].places == (("000000001", -46, 280),)
     assert d.mobs[2].spawns == {"000000040": 6}
-    assert d.items[4000001].drops == (2,) and d.items[4031000].shops == (1,)
+    assert d.items[4000001].drops == ((2, None),) and d.items[4031000].shops == (1,)
     assert d.map_names["000000001"] == "Mushroom Town - West Entrance"
 
 
@@ -27,7 +30,7 @@ def test_every_reference_resolves():
         assert {m for m, _ in q.mobs} <= d.mobs.keys()
         assert {i for i, _ in q.items} | set(q.start_items) <= d.items.keys()
     for i in d.items.values():
-        assert set(i.drops) <= d.mobs.keys() and set(i.shops) <= d.npcs.keys()
+        assert {m for m, _ in i.drops} <= d.mobs.keys() and set(i.shops) <= d.npcs.keys()
 
 
 def test_npc_places_are_map_markers():
@@ -114,3 +117,12 @@ def test_every_reward_item_has_a_name_and_most_an_icon():
     assert ids <= d.items.keys()
     missing = sorted(i for i in ids if not (ICONS / f"{i}.png").exists())
     assert missing == NO_ICON  # the converter's list of meowdb-only items, pinned
+
+
+def test_target_names_unchanged():
+    d = load()
+    qs = d.quests.values()
+    mobs = {d.mobs[m].name for q in qs for m, _ in q.mobs}
+    items = {d.items[i].name for q in qs for i, _ in q.items if i not in q.start_items}
+    assert target_names() == mobs | items
+    assert items < {i.name for i in load_game().items.values()}  # a subset, not every item
