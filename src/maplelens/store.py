@@ -14,6 +14,7 @@ DEFAULTS = {
     "tab_width": None,  # the box's tabs, once the player has dragged its corner
     "pin_exp": False,  # the EXP line on every other tab
     "path_taxi": True,
+    "path_best": True,  # the Path tab's places: Best (True) or Closest (False)
     "class_builds": {},  # job -> the build name picked in the Class tab
     "class_marks": True,  # the AP/SP marks on the game's stat and skill windows
     "update_check": True,  # the installed Windows app asks GitHub for new versions

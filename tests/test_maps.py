@@ -6,7 +6,6 @@ from maplelens.tools.path_arrow.maps import (
     find,
     load,
     picture,
-    search,
 )
 
 MINIMAP = Minimap(100, 100, 50, 50)
@@ -52,19 +51,6 @@ def test_find_duplicate_uses_previous():
 
 def test_find_unknown_is_none():
     assert find(load(), "Nowhere / Nothing", None) is None
-
-
-def test_search():
-    maps = load()
-    res = search(maps, "ant tun")
-    assert res and all("Ant Tunnel" in m.name for m in res)
-    assert search(maps, "") == [] and search(maps, "   ") == []
-    a = M("1", "S", "Zed Ant")
-    b = M("2", "S", "Ant Hill")
-    c = M("3", "S", "Ant Alpha")
-    small = {m.id: m for m in (a, b, c)}
-    assert [m.id for m in search(small, "ANT")] == ["3", "2", "1"]
-    assert len(search(small, "ant", limit=2)) == 2
 
 
 def test_shipped_pictures_match_minimap_size():

@@ -1,5 +1,5 @@
 from maplelens.tools.path_arrow.maps import Cab, MapInfo, Portal
-from maplelens.tools.path_arrow.route import Step, Trip, plan
+from maplelens.tools.path_arrow.route import Step, Trip, distances, plan
 
 
 def mk(id, portals=(), cab=None):
@@ -108,3 +108,14 @@ def test_target_is_the_npc_on_arrival():
     u = Trip(graph(), "A", "B", False)
     u.on_map("B")
     assert u.target((0, 0)) is None
+
+
+def test_distances_matches_plan():
+    g = graph()
+    for taxi in (False, True):
+        for start in g:
+            d = distances(g, start, taxi)
+            for m in g:
+                steps = plan(g, start, m, taxi)
+                assert d.get(m) == (None if steps is None else len(steps) - 1), (start, m)
+    assert distances(g, "nowhere", False) == {}
