@@ -1,7 +1,7 @@
 """The game's data: NPCs, monsters and items (game.json, monsters.json), and the spawn spots."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -136,3 +136,66 @@ def load_game(monsters: Path = SPOTS, game: Path = GAME) -> GameData:
         for i, it in raw["items"].items()
     }
     return GameData(npcs, mobs, items)
+
+
+SEARCH_LIMIT = 20
+KINDS = ("monster", "npc", "item", "map")  # tie order
+
+
+@dataclass(frozen=True)
+class Match:
+    kind: str
+    ids: tuple  # int ids, or (map_id,) for a map
+    name: str
+    line: str
+
+
+def _item_line(data: GameData, item: Item) -> str:
+    parts = []
+    if item.shops:
+        sold = data.npcs.get(item.shops[0])
+        one = len(item.shops) == 1 and sold
+        parts.append(f"sold by {sold.name}" if one else f"{len(item.shops)} shops")
+    droppers = sorted({data.mobs[m].name for m, _ in item.drops if m in data.mobs})
+    if droppers:
+        many = f"dropped by {len(droppers)} monsters"
+        parts.append(f"dropped by {droppers[0]}" if len(droppers) == 1 else many)
+    return " · ".join(["Item", *parts]) if parts else "Item · no known place"
+
+
+def _entries(data: GameData, maps: Mapping[str, tuple[str, str]]):
+    """Every searchable thing as (kind, name, ids, line, street)."""
+    by_name: dict[str, list[Mob]] = {}
+    for mob in data.mobs.values():
+        by_name.setdefault(mob.name, []).append(mob)
+    for name, group in by_name.items():
+        places = {m for g in group for m, n in g.spawns.items() if n > 0 and m in maps}
+        line = f"Monster · Lv {min(g.level for g in group)} · {len(places)} maps"
+        yield "monster", name, tuple(sorted(g.id for g in group)), line, ""
+    for npc in data.npcs.values():
+        places = sorted({m for m, _, _ in npc.places if m in maps})
+        where = maps[places[0]][0] if len(places) == 1 else f"{len(places)} maps"
+        yield "npc", npc.name, (npc.id,), f"NPC · {where}" if places else "NPC · no known place", ""
+    for item in data.items.values():
+        yield "item", item.name, (item.id,), _item_line(data, item), ""
+    for map_id, (name, street) in maps.items():
+        yield "map", name, (map_id,), f"Map · {name}", street
+
+
+def search(
+    data: GameData, maps: Mapping[str, tuple[str, str]], text: str, limit: int = SEARCH_LIMIT
+) -> list[Match]:
+    """Monsters, NPCs, items and maps whose name (a map's street too) contains the text."""
+    q = text.strip().lower()
+    found = []
+    for kind, name, ids, line, street in _entries(data, maps) if q else ():
+        n = name.lower()
+        if q in n:
+            tier = 0 if n == q else 1 if n.startswith(q) else 2
+        elif q in street.lower():
+            tier = 2
+        else:
+            continue
+        found.append((tier, KINDS.index(kind), name, Match(kind, ids, name, line)))
+    found.sort(key=lambda f: f[:3])
+    return [f[3] for f in found[:limit]]
