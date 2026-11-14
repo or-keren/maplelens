@@ -7,7 +7,7 @@ from functools import cache
 from pathlib import Path
 from statistics import median, quantiles
 
-from maplelens.gamedata import load_game
+from maplelens.gamedata import load_game, load_spots
 from maplelens.readers import ExpValue, Reading
 
 _DATA = Path(__file__).parents[2] / "data"
@@ -18,7 +18,14 @@ def monster_free_maps() -> frozenset[str]:
     """Titles ("Street / Name") of the towns where no monster spawns: EXP gained there is a
     quest's reward, never a kill's."""
     maps = json.loads((_DATA / "maps.json").read_text("utf-8"))
-    spawns = {m for mob in load_game().mobs.values() for m, n in mob.spawns.items() if n > 0}
+    stats = load_spots().monsters  # a monster that gives no EXP (jump-quest ones) is no kill
+    spawns = {
+        m
+        for mob in load_game().mobs.values()
+        if str(mob.id) in stats and stats[str(mob.id)].exp > 0
+        for m, n in mob.spawns.items()
+        if n > 0
+    }
     return frozenset(
         f"{m['street']} / {m['name']}" for m in maps if m["town"] and m["id"] not in spawns
     )

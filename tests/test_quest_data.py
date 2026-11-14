@@ -119,10 +119,16 @@ def test_every_reward_item_has_a_name_and_most_an_icon():
     assert missing == NO_ICON  # the converter's list of meowdb-only items, pinned
 
 
-def test_target_names_unchanged():
+def test_target_names_are_quest_monsters_and_every_quest_item():
     d = load()
     qs = d.quests.values()
     mobs = {d.mobs[m].name for q in qs for m, _ in q.mobs}
-    items = {d.items[i].name for q in qs for i, _ in q.items if i not in q.start_items}
-    assert target_names() == mobs | items
+    items = {d.items[i].name for q in qs for i, _ in q.items}  # start items too
+    names = target_names()
+    assert names == mobs | items
     assert items < {i.name for i in load_game().items.values()}  # a subset, not every item
+    start = d.items[d.quests[1001].start_items[0]].name
+    assert start in names  # a delivery item the tracker can show
+    used = {i for q in qs for i, _ in q.items}
+    reward_only = {r.item for q in qs for r in q.rewards.items} - used
+    assert reward_only and any(d.items[i].name not in names for i in reward_only)

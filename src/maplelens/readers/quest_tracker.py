@@ -126,7 +126,7 @@ def target_names() -> frozenset[str]:
     game = load_game()
     quests = _data()["quests"]
     mobs = {m for q in quests for m, _ in q["mobs"]}
-    items = {i for q in quests for i, _ in q["items"] if i not in q["start_items"]}
+    items = {i for q in quests for i, _ in q["items"]}  # start items too: letters show
     return frozenset(game.mobs[m].name for m in mobs) | frozenset(game.items[i].name for i in items)
 
 
