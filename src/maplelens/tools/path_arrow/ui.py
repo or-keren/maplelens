@@ -4,21 +4,40 @@ import math
 from collections.abc import Callable
 from html import escape
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
+    QHBoxLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QSizePolicy,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
+from maplelens.gamedata import (
+    Card,
+    GameData,
+    Match,
+    Source,
+    SpotData,
+    item_places,
+    load_game,
+    load_spots,
+    map_card,
+    mob_places,
+    npc_card,
+    npc_places,
+    search,
+)
 from maplelens.overlay import (
     ACCENT,
     DARK,
+    EDGE,
     FIELD_STYLE,
     LABEL_COLOR,
     LABEL_PT,
@@ -27,14 +46,17 @@ from maplelens.overlay import (
     InfoLine,
     Layer,
     game_to_layer,
+    mark_button,
     primary_button,
     secondary_button,
     text_label,
 )
 from maplelens.readers import Reading, glyphs
+from maplelens.spot_card import SpotCard
 from maplelens.tools.path_arrow.camera import by_size, can_place, fits, player_world, to_screen
-from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture, search
-from maplelens.tools.path_arrow.route import Trip, plan
+from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture
+from maplelens.tools.path_arrow.places import WHERE, PictureRow, match_row, place_row
+from maplelens.tools.path_arrow.route import Trip, distances
 
 # Normalized px from the feet (the dot's world spot) up to the arrow's centre: just above
 # the head, under the 768-high frame the camera model works in.
@@ -50,9 +72,25 @@ HIDDEN = "Hidden portal: stand on it and press ↑"
 ON_MAP = "{} is on this map"
 NOT_LISTED = "Not in the map list yet, so no route from here"
 ACTIONS = (OPEN, HIDDEN)  # yellow: the player can act on these now; the rest are information
-MATCH_ROWS = 3  # visible matches; the list scrolls for the rest
+MATCH_ROWS = 3  # visible matches, or places; the list scrolls for the rest
+CROSS = "\u00d7"  # the multiplication sign: back to the search
+SHOW_MS, HIDE_MS = 150, 80  # as on the Class tab: no flash on a sweep; swap in place
+Goal = tuple[str, tuple[int, int] | None, str | None]  # (map, NPC spot, the NPC's name)
 _DONE, _AHEAD, _NUM = "#6f7d93", "#c9d3e3", "#7b8aa3"  # mockup 3's route list
 _STYLE = FIELD_STYLE + f"QCheckBox {{ color: {VALUE_COLOR}; }}"
+
+
+class _Leave(QObject):
+    """Calls `gone` when a list's viewport is left or hidden (the list, the page or the tab)."""
+
+    def __init__(self, parent: QObject, gone: Callable[[QEvent.Type], None]):
+        super().__init__(parent)
+        self._gone = gone
+
+    def eventFilter(self, _obj, event):  # noqa: N802
+        if event.type() in (QEvent.Leave, QEvent.Hide):
+            self._gone(event.type())
+        return False
 
 
 class _Arrow(QWidget):
@@ -101,16 +139,39 @@ class _Search(QLineEdit):
         super().focusOutEvent(event)
 
 
+def _hline(*widgets: QWidget | None, spacing: int = 6) -> QWidget:
+    """The widgets side by side; None is a stretch."""
+    box = QWidget()
+    line = QHBoxLayout(box)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(spacing)
+    for w in widgets:
+        if w is None:
+            line.addStretch()
+        else:
+            line.addWidget(w, 0, Qt.AlignVCenter)
+    return box
+
+
 class PathArrowTool:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the data are keywords, for tests to pass their own
         self,
         settings: dict,
         on_settings_changed: Callable[[], None],
         layer: Layer,
         allow_typing: Callable[[bool], None],
         maps: dict[str, MapInfo] | None = None,
+        *,
+        game: GameData | None = None,
+        spots: SpotData | None = None,
     ):
         self.maps = load() if maps is None else maps
+        self.game = load_game() if game is None else game
+        self.spots = load_spots() if spots is None else spots
+        self._picked: Match | None = None  # the monster, item or NPC whose places are listed
+        self._picked_row: PictureRow | None = None
+        self._places_for: tuple | None = None  # what the places list was sorted for
+        self._dist: tuple = (None, {})  # ((here, taxi), hops to every map)
         self._settings, self._changed = settings, on_settings_changed
         self._layer, self._allow_typing = layer, allow_typing
         self.title = "Path"
@@ -129,13 +190,124 @@ class PathArrowTool:
         self._now = 0.0
         self.arrow = _Arrow(layer)
         self._tab_w = TAB_W
+        self._card = SpotCard()
+        self._pending: tuple[Card, QWidget] | None = None  # the card the show timer will show
+        self._show_timer = QTimer(singleShot=True, interval=SHOW_MS, timeout=self._show_card)
+        self._hide_timer = QTimer(singleShot=True, interval=HIDE_MS, timeout=self._card.hide)
         self.tab = self._build_tab(settings["path_taxi"])
         self._render()
 
     def set_tab_w(self, width: int) -> None:
         self._tab_w = width
         self.tab.setFixedWidth(width)
+        for lst in (self._matches, self._places):
+            for i in range(lst.count()):
+                lst.itemWidget(lst.item(i)).fit(self._row_w())
+        if self._picked_row:
+            self._picked_row.fit(self._picked_w())
         self._render()  # the names are cut to the width
+
+    def _row_w(self) -> int:
+        """A list row's width: the tab less the list's frame and a scroll bar's room."""
+        bar = self._matches.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        return self._tab_w - 2 * self._matches.frameWidth() - bar
+
+    def _picked_w(self) -> int:
+        return self._tab_w - self._cross.sizeHint().width() - 6
+
+    def _list(self) -> QListWidget:
+        lst = QListWidget()
+        lst.setMouseTracking(True)  # itemEntered without a button down
+        lst.itemEntered.connect(lambda item, lst=lst: self._hover(lst, item))
+        lst.viewport().installEventFilter(_Leave(lst, self._left))
+        lst.setFocusPolicy(Qt.NoFocus)
+        lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # names elide
+        # Its own 256 px width hint would widen the box past the tab (the box's page stack
+        # sizes from raw hints, ignoring the tab's fixed width).
+        lst.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        lst.hide()
+        return lst
+
+    @staticmethod
+    def _add(lst: QListWidget, row: PictureRow, data) -> QListWidgetItem:
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, data)
+        item.setSizeHint(row.sizeHint())
+        lst.addItem(item)
+        lst.setItemWidget(item, row)
+        return item
+
+    @staticmethod
+    def _show_rows(lst: QListWidget) -> None:
+        """Shown when it has rows, MATCH_ROWS high at most, the first one current."""
+        n = lst.count()
+        lst.setVisible(n > 0)
+        if n:
+            rows = lst.sizeHintForRow(0) * min(n, MATCH_ROWS)
+            lst.setFixedHeight(rows + 2 * lst.frameWidth())
+            lst.setCurrentRow(0)
+
+    def _card_for(self, data) -> Card | None:
+        """The hover card of a match or a place; None for the rows with no card."""
+        if isinstance(data, Match):
+            if data.kind != "map":
+                return None
+            m = self.maps[data.ids[0]]
+            return map_card(self.spots, m.id, m.name, m.street)
+        if not isinstance(data, Source) or self._picked is None:
+            return None
+        m, kind = self.maps[data.map_id], self._picked.kind
+        if data.shop:
+            return npc_card(self.game, data.via, m.title, shop=True)
+        if kind == "npc":
+            return npc_card(self.game, self._picked.ids[0], m.title)
+        extra = f"≈ {data.score:.1f} drops per clear" if kind == "item" else None
+        return map_card(self.spots, m.id, m.name, m.street, str(data.via), extra)
+
+    def _hover(self, lst: QListWidget, item: QListWidgetItem | None) -> None:
+        card = self._card_for(item.data(Qt.UserRole)) if item else None
+        if card is None:
+            self._left()
+            return
+        row = lst.itemWidget(item)
+        if self._card.isVisible():  # straight from another row: swap it in place
+            self._hide_timer.stop()
+            self._card.fill(card, self.spots)
+            self._card.put(row)
+        else:
+            self._pending = (card, row)
+            self._show_timer.start()
+
+    def _left(self, kind=QEvent.Leave) -> None:
+        """The mouse left the rows: hide after a beat, so the next row swaps it in place; a
+        hidden list hides it at once."""
+        # The viewports report hiding while the tool is torn down too: at exit Python deletes
+        # the card and timers first.
+        parts = [getattr(self, n, None) for n in ("_card", "_show_timer", "_hide_timer")]
+        if not all(p is not None and isValid(p) for p in parts):
+            return
+        if kind == QEvent.Hide:
+            self._no_card()
+            return
+        self._show_timer.stop()
+        self._pending = None
+        if self._card.isVisible():
+            self._hide_timer.start()
+
+    def _show_card(self) -> None:
+        if self._pending is None:
+            return
+        (card, row), self._pending = self._pending, None
+        self._card.fill(card, self.spots)
+        self._card.put(row)
+        self._card.show()
+
+    def _no_card(self) -> None:
+        """Gone at once: the rows it was for are gone, or the trip starts."""
+        self._show_timer.stop()
+        self._hide_timer.stop()
+        self._pending = None
+        self._card.hide()
 
     def _build_tab(self, taxi: bool) -> QWidget:
         tab = QWidget()
@@ -147,19 +319,14 @@ class PathArrowTool:
         self._info = InfoLine()
         self._search = _Search(self._set_typing)
         self._search.textChanged.connect(self._on_text)
-        self._matches = QListWidget()
-        self._matches.setFocusPolicy(Qt.NoFocus)
-        self._matches.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # names elide
-        self._matches.setTextElideMode(Qt.ElideMiddle)  # keeps a repeated name's street
-        # Its own 256 px width hint would widen the box past the tab (the box's page stack
-        # sizes from raw hints, ignoring the tab's fixed width).
-        self._matches.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._matches = self._list()
         self._matches.currentItemChanged.connect(lambda *_: self._render())
         self._matches.itemClicked.connect(self._pick)
-        self._matches.hide()
+        picked = self._build_picked()
         self._taxi = QCheckBox("Use taxi")
         self._taxi.setFocusPolicy(Qt.NoFocus)
         self._taxi.setChecked(taxi)
+        self._taxi.toggled.connect(lambda _: self._render())  # re-sorts the places
         self._start = primary_button("Start", self._on_start)
         self._route_list = text_label("", LABEL_PT + 1, _AHEAD)
         self._route_list.setTextFormat(Qt.RichText)
@@ -167,7 +334,7 @@ class PathArrowTool:
 
         self._choose, self._running = QWidget(), QWidget()
         for page, widgets in [
-            (self._choose, [self._search, self._matches, self._taxi, self._start]),
+            (self._choose, [self._search, self._matches, *picked, self._taxi, self._start]),
             (self._running, [self._route_list, self._stop]),
         ]:
             col = QVBoxLayout(page)
@@ -181,6 +348,24 @@ class PathArrowTool:
         for w in (self._header, self._message, self._info, self._choose, self._running):
             col.addWidget(w)
         return tab
+
+    def _build_picked(self) -> list[QWidget]:
+        """The picked state's lines, in place of the field and the matches: the picked row
+        with its cross, "Where …" with Best | Closest, the places."""
+        self._cross = mark_button(CROSS, LABEL_PT + 2, self._unpick)
+        self._picked_box = _hline(self._cross)  # the picked row goes in before the cross
+        self._where = text_label("", LABEL_PT, LABEL_COLOR)
+        self._best = mark_button("Best", LABEL_PT, lambda: self._set_best(True))
+        self._closest = mark_button("Closest", LABEL_PT, lambda: self._set_best(False))
+        bar = text_label("|", LABEL_PT, EDGE)
+        self._switch = _hline(self._best, bar, self._closest, spacing=4)
+        self._where_line = _hline(self._where, None, self._switch)
+        self._places = self._list()
+        self._places.currentItemChanged.connect(lambda *_: self._render())
+        self._style_switch()
+        self._picked_box.hide()
+        self._where_line.hide()
+        return [self._picked_box, self._where_line, self._places]
 
     @property
     def running(self) -> bool:
@@ -259,31 +444,119 @@ class PathArrowTool:
 
     def _on_text(self, text: str) -> None:
         self._note = ""
+        self._no_card()
         self._matches.clear()
-        hits = search(self.maps, text)
-        names = [m.name for m in hits]
+        names = {i: (m.name, m.street) for i, m in self.maps.items()}
+        hits = search(self.game, names, text)
         for m in hits:
-            item = QListWidgetItem(f"{m.name} · {m.street}" if names.count(m.name) > 1 else m.name)
-            item.setData(Qt.UserRole, m.id)
-            item.setToolTip(m.title)
-            self._matches.addItem(item)
-        n = self._matches.count()
-        self._matches.setVisible(n > 0)
-        if n:
-            rows = self._matches.sizeHintForRow(0) * min(n, MATCH_ROWS)
-            self._matches.setFixedHeight(rows + 2 * self._matches.frameWidth())
-            self._matches.setCurrentRow(0)
+            self._add(self._matches, match_row(self.game, self.spots, m, self._row_w()), m)
+        self._show_rows(self._matches)
         self._render()
 
     def _pick(self, item: QListWidgetItem) -> None:
-        """A clicked match fills the field and the list closes on it; Start goes there."""
-        self._search.blockSignals(True)  # re-searching the name could make another row current
-        self._search.setText(item.text())
-        self._search.blockSignals(False)
-        self._matches.setCurrentItem(item)
-        self._matches.hide()
+        """A map (or an NPC on one map) fills the field and the list closes on it; Start
+        goes there. A monster, an item or any other NPC lists its places instead."""
         self._set_typing(False)
+        self._no_card()
+        self._matches.setCurrentItem(item)
+        if self._goal() is not None:
+            self._search.blockSignals(True)  # re-searching could make another row current
+            self._search.setText(item.data(Qt.UserRole).name)
+            self._search.blockSignals(False)
+            self._matches.hide()
+        else:
+            self._picked = item.data(Qt.UserRole)
+            if self._picked_row:
+                self._picked_row.hide()  # out of the line now, deleted soon
+                self._picked_row.deleteLater()
+            self._picked_row = match_row(self.game, self.spots, self._picked, self._picked_w())
+            self._picked_box.layout().insertWidget(0, self._picked_row, 1)
+            for w in (self._search, self._matches):
+                w.hide()
+            for w in (self._picked_box, self._where_line):
+                w.show()
+            self._fill_places()
         self._render()
+
+    def _unpick(self) -> None:
+        """Back to the search, its text and matches as they were."""
+        self._picked = None
+        self._no_card()
+        self._places.clear()
+        for w in (self._picked_box, self._where_line, self._places):
+            w.hide()
+        self._search.show()
+        self._matches.setVisible(self._matches.count() > 0)
+        self._render()
+
+    def _places_key(self) -> tuple:
+        here = self._here.id if self._here else None
+        return self._picked, here, self._taxi.isChecked(), self._settings["path_best"]
+
+    @staticmethod
+    def _place_id(s) -> tuple:
+        return s.map_id, s.via, s.shop
+
+    def _fill_places(self) -> None:
+        m, closest = self._picked, not self._settings["path_best"]
+        if m.kind == "monster":
+            found = mob_places(self.game, m.ids, self.maps, self.hops, closest)
+        elif m.kind == "item":
+            found = item_places(self.game, m.ids[0], self.maps, self.hops, closest)
+        else:
+            found = npc_places(self.game, m.ids[0], self.maps, self.hops)
+        self._places_for = self._places_key()
+        self._no_card()
+        known, lst = self._here is not None, self._places
+        cur = lst.currentItem()
+        kept = cur and self._place_id(cur.data(Qt.UserRole))
+        lst.blockSignals(True)  # the caller renders once it's filled
+        lst.clear()
+        for s in found:
+            row = place_row(self.game, self.spots, self.maps, m.kind, s, known, self._row_w())
+            self._add(lst, row, s)
+        self._show_rows(lst)
+        if kept:  # a re-sort keeps the place the player chose
+            for i in range(lst.count()):
+                if self._place_id(lst.item(i).data(Qt.UserRole)) == kept:
+                    lst.setCurrentRow(i)
+                    break
+        lst.blockSignals(False)
+        self._where.setText(WHERE[m.kind] if found else f"{WHERE[m.kind]}: unknown")
+        self._switch.setVisible(bool(found) and m.kind != "npc")  # an NPC's go by hops only
+
+    def _set_best(self, best: bool) -> None:
+        if self._settings["path_best"] != best:
+            self._settings["path_best"] = best
+            self._changed()
+            self._style_switch()
+            self._render()  # re-sorts
+
+    def _style_switch(self) -> None:
+        """Best | Closest: the side that's on in yellow and bold."""
+        best = self._settings["path_best"]
+        for button, on in ((self._best, best), (self._closest, not best)):
+            color, weight = (ACCENT, "bold") if on else (LABEL_COLOR, "normal")
+            button.setStyleSheet(f"color: {color}; font-weight: {weight}; border: 0; padding: 0;")
+
+    def _goal(self) -> Goal | None:
+        """Where Start goes: the current place, or the current match when that is a map or
+        an NPC on one map."""
+        if self._picked:
+            item = self._places.currentItem()
+            if item is None:
+                return None
+            s = item.data(Qt.UserRole)
+            named = s.shop or self._picked.kind == "npc"
+            return s.map_id, s.at, self.game.npcs[s.via].name if named else None
+        item = self._matches.currentItem()
+        m = item.data(Qt.UserRole) if item else None
+        if m is None or m.kind in ("monster", "item"):
+            return None
+        if m.kind == "map":
+            return m.ids[0], None, None
+        places = npc_places(self.game, m.ids[0], self.maps, lambda _: None)
+        return (places[0].map_id, places[0].at, m.name) if len(places) == 1 else None
 
     def go(self, map_id: str, at: tuple[int, int] | None = None, label: str | None = None) -> None:
         """Fill the field with that map and start, as picking it and pressing Start do.
@@ -291,41 +564,44 @@ class PathArrowTool:
         With `at`, the trip goes on to that spot on the map; `label` names it.
         """
         m = self.maps[map_id]
+        self._unpick()
         self._search.setText(m.name)  # fills the match list
         item = next(
             (
                 i
                 for i in (self._matches.item(n) for n in range(self._matches.count()))
-                if i.data(Qt.UserRole) == map_id
+                if (i.data(Qt.UserRole).kind, i.data(Qt.UserRole).ids) == ("map", (map_id,))
             ),
             None,
         )
         if item is None:
-            item = QListWidgetItem(m.name)
-            item.setData(Qt.UserRole, map_id)
-            self._matches.addItem(item)
+            match = Match("map", (map_id,), m.name, f"Map · {m.street}")
+            row = match_row(self.game, self.spots, match, self._row_w())
+            item = self._add(self._matches, row, match)
         self._pick(item)
-        self._begin(at, label)
+        self._begin((map_id, at, label))
 
     def _on_start(self) -> None:
-        self._begin(None, None)
+        self._begin(self._goal())
 
-    def _begin(self, at, label) -> None:
-        item = self._matches.currentItem()
+    def _begin(self, goal: Goal | None) -> None:
         self._set_typing(False)
-        if self._here is None or self._unread() or item is None:
+        self._no_card()
+        if self._here is None or self._unread() or goal is None:
             return
+        map_id, at, label = goal
         taxi = self._taxi.isChecked()
         if self._settings.get("path_taxi") != taxi:
             self._settings["path_taxi"] = taxi
             self._changed()
         self._note = ""
         self._label = label
-        self.trip = Trip(self.maps, self._here.id, item.data(Qt.UserRole), taxi, at)
+        self.trip = Trip(self.maps, self._here.id, map_id, taxi, at)
         self._settle()
         self._render()
 
     def stop(self) -> None:
+        self._no_card()
         self.trip = None
         self._render()
 
@@ -338,10 +614,14 @@ class PathArrowTool:
         """Maps to cross from the confirmed map to `map_id`, None if unknown or no route."""
         if self._here is None:
             return None
-        steps = plan(self.maps, self._here.id, map_id, self._taxi.isChecked())
-        return None if steps is None else len(steps) - 1
+        key = (self._here.id, self._taxi.isChecked())
+        if self._dist[0] != key:
+            self._dist = (key, distances(self.maps, *key))
+        return self._dist[1].get(map_id)
 
     def _render(self) -> None:
+        if self._picked and self._places_for != self._places_key():
+            self._fill_places()  # a new map, taxi or Best | Closest
         if self._arrived and self._now - self._arrived[1] >= ARRIVED_S:
             self._arrived = None
         if self._arrived:
@@ -370,7 +650,7 @@ class PathArrowTool:
         self._info.setText(info)
         self._info.setVisible(bool(info))
         known = self._here is not None and not self._unread()
-        self._start.setEnabled(known and self._matches.currentItem() is not None)
+        self._start.setEnabled(known and self._goal() is not None)
         self._place_arrow(world)
 
     def _world(self) -> tuple[float, float] | None:

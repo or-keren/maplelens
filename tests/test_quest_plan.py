@@ -8,12 +8,9 @@ from maplelens.tools.quest_helper.plan import (
     UNKNOWN,
     Target,
     also_for,
-    best_map,
-    closest_map,
     done_parts,
     find_quest,
     match_block,
-    npc_place,
     shared_name,
     show_giver,
     starts_closest,
@@ -28,25 +25,26 @@ def NONE(m):
     return None
 
 
+def mob_row(spawns, hops=NONE, closest=False):
+    d = QuestData({}, {}, {1: Mob(1, "M", spawns)}, {}, {m: m.upper() for m in "abc"})
+    q = quest(mobs=((1, 1),))
+    d = replace(d, quests={1: q})
+    (t,) = targets(d, q, giver=False, hops=hops, closest=closest)
+    return t.map_id
+
+
 def test_best_map_most_spawns():
-    assert best_map({"a": 10, "b": 4}, {"a", "b"}, NONE) == "a"
+    assert mob_row({"a": 10, "b": 4}) == "a"
 
 
 def test_near_tie_goes_to_fewer_hops():
-    assert best_map({"a": 10, "b": 8}, {"a", "b"}, {"a": 3, "b": 1}.get) == "b"
-    assert best_map({"a": 10, "b": 7}, {"a", "b"}, {"a": 3, "b": 1}.get) == "a"
+    assert mob_row({"a": 10, "b": 8}, {"a": 3, "b": 1}.get) == "b"
+    assert mob_row({"a": 10, "b": 7}, {"a": 3, "b": 1}.get) == "a"
 
 
 def test_best_map_skips_unlisted():
-    assert best_map({"x": 50, "a": 2}, {"a"}, NONE) == "a"
-    assert best_map({"x": 5}, {"a"}, NONE) is None
-
-
-def test_npc_place_fewest_hops():
-    n = Npc(1, "N", (("a", 1, 2), ("b", 3, 4), ("x", 5, 6)))
-    assert npc_place(n, {"a", "b"}, {"a": 4, "b": 1}.get) == ("b", 3, 4)
-    assert npc_place(n, {"a", "b"}, NONE) == ("a", 1, 2)
-    assert npc_place(n, {"c"}, NONE) is None
+    assert mob_row({"x": 50, "a": 2}) == "a"
+    assert mob_row({"y": 5}) is None
 
 
 def data(quest: Quest) -> QuestData:
@@ -61,12 +59,12 @@ def data(quest: Quest) -> QuestData:
             5: Mob(5, "Pig", {"a": 10, "c": 1}),
         },
         {
-            10: Item(10, "Jr. Necki Skin", (1,), ()),
-            11: Item(11, "Slime Gel", (2,), ()),
+            10: Item(10, "Jr. Necki Skin", ((1, None),), ()),
+            11: Item(11, "Slime Gel", ((2, None),), ()),
             12: Item(12, "Mirror", (), (2,)),
             13: Item(13, "Mystery", (), ()),
             14: Item(14, "Start", (), ()),
-            15: Item(15, "Hide", (1, 2), ()),
+            15: Item(15, "Hide", ((1, None), (2, None)), ()),
         },
         NAMES,
     )
@@ -153,10 +151,10 @@ FAR_A = {"a": 3, "b": 1, "c": 1}.get
 
 
 def test_closest_map_fewest_hops_then_most_spawns():
-    assert closest_map({"a": 10, "b": 1}, {"a", "b"}, FAR_A) == "b"
-    assert closest_map({"b": 1, "c": 4}, {"b", "c"}, FAR_A) == "c"
-    assert closest_map({"a": 10, "b": 1}, {"a", "b"}, NONE) == "a"  # no route known
-    assert closest_map({"x": 5}, {"a"}, NONE) is None
+    assert mob_row({"a": 10, "b": 1}, FAR_A, True) == "b"
+    assert mob_row({"b": 1, "c": 4}, FAR_A, True) == "c"
+    assert mob_row({"a": 10, "b": 1}, NONE, True) == "a"  # no route known
+    assert mob_row({"y": 5}, NONE, True) is None
 
 
 def test_closest_targets_a_monster_and_a_drop():
@@ -231,3 +229,50 @@ def test_no_progress_is_todays_rows():
     assert targets(d, q, giver=False, hops=NONE, done=frozenset()) == targets(
         d, q, giver=False, hops=NONE
     )
+
+
+def rated(drops, mobs, items=None, shops=()):
+    """Item 20 'Gem', dropped by `drops` ((mob, rate)...) of `mobs` {id: {map: n}}."""
+    npcs = {1: Npc(1, "Luke", (("a", 10, 20),)), 2: Npc(2, "Sera", (("b", 30, 40),))}
+    gem = Item(20, "Gem", tuple(drops), tuple(shops))
+    mob = {i: Mob(i, f"Mob{i}", sp) for i, sp in mobs.items()}
+    return QuestData({}, npcs, mob, {20: gem}, NAMES)
+
+
+def test_loose_item_rate_beats_spawns():
+    d = rated([(1, 1.0), (2, 40.0)], {1: {"a": 20}, 2: {"b": 5}})
+    q = quest(items=((20, 1),))
+    (t,) = targets(d, q, giver=False, hops=NONE)
+    assert (t.map_id, t.sub) == ("b", "Mob2 · Map B")
+
+
+def test_sold_and_dropped_points_to_shop():
+    d = rated([(1, 50.0)], {1: {"a": 20}}, shops=(2,))
+    q = quest(items=((20, 1),))
+    (t,) = targets(d, q, giver=False, hops=NONE)
+    assert (t.map_id, t.at, t.sub, t.npc) == ("b", (30, 40), "Sera · Map B", "Sera")
+
+
+def test_mine_path_uses_rate():
+    d = rated([(1, 1.0), (2, 40.0)], {1: {"a": 20}, 2: {"b": 5}})
+    q = quest(mobs=((1, 5), (2, 5)), items=((20, 1),))
+    one, two = targets(d, q, giver=False, hops=NONE)
+    assert one.title == "Mob1 ×5" and two.title == "Mob2 ×5 · Gem ×1"
+
+
+def test_mine_path_without_rates_keeps_most_spawns():
+    d = rated([(1, None), (2, None)], {1: {"a": 20}, 2: {"b": 5}})
+    q = quest(mobs=((1, 5), (2, 5)), items=((20, 1),))
+    one, two = targets(d, q, giver=False, hops=NONE)
+    assert one.title == "Mob1 ×5 · Gem ×1" and two.title == "Mob2 ×5"
+
+
+def test_empty_places_keep_their_messages():
+    q = quest(items=((20, 1),))
+    for drops, mobs, shops, sub in [
+        ([(1, 5.0)], {1: {"x": 3}}, (), "Not in the map list yet"),
+        ([(1, 5.0)], {1: {}}, (), "Where it spawns: unknown"),
+        ([], {}, (3,), "Not in the map list yet"),
+    ]:
+        d = rated(drops, mobs, shops=shops)
+        assert targets(d, q, giver=False, hops=NONE)[0].sub == sub

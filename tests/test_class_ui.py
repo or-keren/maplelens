@@ -3,12 +3,13 @@ from pathlib import Path
 import pytest
 
 from maplelens import overlay
+from maplelens.gamedata import load_spots
 from maplelens.readers import Reading
 from maplelens.readers.skill_window import SkillRow, SkillWindow
 from maplelens.readers.stat_window import StatWindow
 from maplelens.readers.window import UNREADABLE
 from maplelens.store import DEFAULTS
-from maplelens.tools.class_helper.data import MAPS, load, load_spots
+from maplelens.tools.class_helper.data import MAPS, load
 
 SMALL = Path(__file__).parent / "fixtures" / "classes_small.json"
 SPOTS_SMALL = Path(__file__).parent / "fixtures" / "spots_small.json"
@@ -715,7 +716,7 @@ def test_the_card_never_takes_focus_or_clicks(make):
 def test_card_spot_flips_right_and_stays_on_screen():
     from PySide6.QtCore import QPoint, QRect, QSize
 
-    from maplelens.tools.class_helper.ui import card_spot
+    from maplelens.spot_card import card_spot
 
     screen, size = QRect(0, 0, 1366, 768), QSize(300, 400)
     assert card_spot(QRect(900, 40, 238, 300), 100, size, screen) == QPoint(900 - 8 - 300, 100)

@@ -23,6 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from maplelens.gamedata import load_game
 from maplelens.readers import glyphs, map_name, ocr, quest_window, window
 from maplelens.readers.window import UNREADABLE
 
@@ -122,8 +123,11 @@ def _data() -> dict:
 @cache
 def target_names() -> frozenset[str]:
     """The items' and monsters' names a target line can show."""
-    raw = _data()
-    return frozenset(v["name"] for k in ("items", "mobs") for v in raw[k].values())
+    game = load_game()
+    quests = _data()["quests"]
+    mobs = {m for q in quests for m, _ in q["mobs"]}
+    items = {i for q in quests for i, _ in q["items"]}  # start items too: letters show
+    return frozenset(game.mobs[m].name for m in mobs) | frozenset(game.items[i].name for i in items)
 
 
 @lru_cache(maxsize=256)

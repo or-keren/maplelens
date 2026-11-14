@@ -93,13 +93,3 @@ def find(maps: dict[str, MapInfo], title: str, previous: str | None) -> MapInfo 
         return None
     linked = [m for m in hits if any(p.to == m.id for p in prev.portals)]
     return linked[0] if len(linked) == 1 else None
-
-
-def search(maps: dict[str, MapInfo], text: str, limit: int = 8) -> list[MapInfo]:
-    """Maps whose name or street contains `text`; names starting with it first."""
-    t = text.strip().lower()
-    if not t:
-        return []
-    hits = [m for m in maps.values() if t in m.name.lower() or t in m.street.lower()]
-    hits.sort(key=lambda m: (not m.name.lower().startswith(t), m.name))
-    return hits[:limit]

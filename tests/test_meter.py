@@ -355,6 +355,10 @@ def test_town_with_monsters_counts_kills():
     assert "Maple Road / East Entrance to Mushroom Town" not in monster_free_maps()
 
 
+def test_jump_quest_maps_with_zero_exp_monsters_are_monster_free():
+    assert "Hidden Street / The Forest of Patience <Step 4>" in monster_free_maps()
+
+
 def test_session_none_before_first_counted_gain():
     m = ExpMeter()
     feed(m, 0, 1000, 10.0)  # the first reading is only the baseline

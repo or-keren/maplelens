@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from maplelens.gamedata import load_game
 from maplelens.readers import Reading
 from maplelens.readers.quest_tracker import PARTLY, Tracker, TrackerLine, TrackerQuest
 from maplelens.readers.quest_window import QuestOpen
@@ -12,6 +13,7 @@ from maplelens.tools.quest_helper.data import MAPS, Item, Quest, Reward, Rewards
 from maplelens.tools.quest_helper.plan import TIMES
 
 SMALL = Path(__file__).parent / "fixtures" / "quests_small.json"
+GAME = Path(__file__).parent / "fixtures" / "quests_small_game"
 RECT = (0, 0, 1366, 768)
 MIRROR = "Bringing a Mirror to Heena"  # 1001: Sera gives it, Snail x3, Heena takes it
 SNAILS = 1002  # Snail Hunt: Snail x5 (the same map as 1001's), hand in to Heena
@@ -24,7 +26,7 @@ SNAIL_MAP, TOWN = "000000040", "000000001"
 
 
 def data():
-    d = load(SMALL, MAPS)
+    d = load(SMALL, MAPS, load_game(GAME / "monsters.json", GAME / "game.json"))
     q = d.quests[1001]
     extra = [
         Quest(SNAILS, "Snail Hunt", None, 1, ((2, 5),), (), ()),

@@ -37,6 +37,8 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
 - `src/maplelens/` — the package
   - `capture.py` (shared: `pick_window`) + `capture_win.py` / `capture_mac.py` — find the game window, grab its pixels
   - `readers/` — screenshot → value (`glyphs`, `ocr`, `exp`, `level`, `job`, `map_name`, `minimap_pos` (`read_view`), `stat_window`, `skill_window`, `quest_window`, `quest_tracker` (the game's Quest Helper panel); `read_all` in `__init__`, with `due` / `found` for which windows to read this tick: one that isn't on screen is searched one tick in four, the minimap every tick); numbers via glyph templates, words (map, class, skill names) via the system OCR: `ocr.py` (shared) + `ocr_win.py` / `ocr_mac.py`. The draggable game windows (`window.py`, shared) are read differently: scaled from the window's own corner, digits by correlation with a margin, since exact templates miss at most sub-pixel offsets
+  - `gamedata.py` — loads every NPC, monster and item (`data/game.json`, `data/monsters.json`) and the spawn spots (`SpotData`); `data/npc_icons/` — NPC pictures
+  - `spot_card.py` — the hover card beside the box (`SpotCard`): a map or NPC picture, its monsters and lines; built from `gamedata.map_card` / `npc_card`
   - `overlay.py` — the see-through `Layer` and draggable `Box` (its ••• menu button, `attach_menu`), the tab's `Row` (`on_hover` reports the mouse entering and leaving), `paint_box`; `overlay_mac.py` — the macOS panels
   - `data/maps.json` — the map data; `data/minimaps/` — minimap pictures; `data/item_icons/` — reward item pictures; `data/icon.ico` — the app icon (the exe, Setup and the tray)
   - `data/monsters.json` — each map's monster cap, spawn spots and respawn timers, and monster stats (OSMS ids); `data/map_pictures/`, `data/monster_icons/` — their pictures
@@ -48,8 +50,8 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
   - `reader.py` — the per-tick grab, trim and `read_all` (`read_game`), run here (`InlineReader`) or in a child process (`ProcessReader`)
   - `app.py` — entry point (`uv run maplelens`); also the update check's threads, download and handoff to Setup (`UpdateCheck`), the Windows tray icon (`make_tray`), Hide / Show (`Shown`) and the tick (`Tick`, which keeps `turn` / `seen_at` for that schedule; on the Mac it reads through `ProcessReader`, a helper process macOS doesn't slow, `make_reader`)
   - `tools/exp_meter/` — the EXP meter: `meter`, `history`, `text`, `ui`
-  - `tools/path_arrow/` — the path arrow: `maps`, `route`, `camera`, `ui`
-  - `tools/class_helper/` — the class helper: `data`, `plan`, `ui` (the Class tab, the training spot hover card `SpotCard`, and the marks on the stat and skill windows)
+  - `tools/path_arrow/` — the path arrow: `maps`, `route`, `camera`, `ui` (the Path tab: search, and a picked monster, item or NPC's places), `places` (its picture rows)
+  - `tools/class_helper/` — the class helper: `data`, `plan`, `ui` (the Class tab, the training spot hover card, and the marks on the stat and skill windows)
   - `tools/quest_helper/` — the quest helper: `data`, `plan`, `rewards`, `ui` (the Quests tab, which shows each quest's rewards; the box switches to it while a quest window is open)
 - `scripts/check_screen_only.py` — the guard; banned lists live there, with reasons
 - `scripts/grab.py` — save a cropped fixture screenshot of the game; `--screen` grabs the screen over it, MapleLens included, for README shots
@@ -69,7 +71,7 @@ Planned, **not yet** created: `tools/<name>/` for prices.
 
 - Readers are pure functions `screenshot -> value`, tested against PNG
   fixtures, so tests never need the game running.
-- Each tool lives in its own folder and depends only on readers + overlay,
+- Each tool lives in its own folder and depends only on readers + overlay + gamedata,
   never on another tool.
 - Don't add a dependency for what a few lines can do. Never add a module on
   the guard's banned list.

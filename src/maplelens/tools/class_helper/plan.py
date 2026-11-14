@@ -2,8 +2,8 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
+from maplelens.gamedata import Card, SpotData, map_card
 from maplelens.tools.class_helper.data import (
     STATS,
     Advance,
@@ -14,14 +14,11 @@ from maplelens.tools.class_helper.data import (
     JobPlan,
     Place,
     Skill,
-    SpotData,
     SpStep,
     TrainRow,
 )
 
 MAX_MAPS = 3
-DOT_COLOURS = ("#ffcc33", "#7fa8ff", "#8ce678", "#ff8cc8")
-CAP = "Up to {} monsters at once"
 
 
 @dataclass(frozen=True)
@@ -161,56 +158,9 @@ def short_name(name: str) -> str:
     return name.rsplit(" / ", 1)[-1]
 
 
-@dataclass(frozen=True)
-class CardMob:
-    id: str
-    name: str
-    stats: str
-    spots: str
-    colour: str
-
-
-@dataclass(frozen=True)
-class Card:
-    title: str
-    street: str
-    picture: Path | None
-    size: tuple[int, int]
-    mobs: tuple[CardMob, ...]
-    cap: str | None
-    dots: tuple[tuple[int, int, str], ...]  # (x, y, colour) in picture pixels
-
-
-def respawn_text(lo: float, hi: float) -> str:
-    unit, div = ("min", 60) if lo >= 120 else ("s", 1)
-    a, b = lo / div, hi / div
-    span = f"{a:g}" if a == b else f"{a:g}\N{EN DASH}{b:g}"
-    return f"every {span} {unit}"
-
-
 def spot_card(place: Place, spots: SpotData) -> Card | None:
     """What the hover card shows for a map; None when there is neither a picture nor spawns."""
-    m = spots.maps.get(place.map_id) if place.map_id else None
-    if m is None:
+    if not place.map_id or place.map_id not in spots.maps:
         return None
-    picture = spots.picture(place.map_id)
-    at: dict[str, list[tuple[int, int]]] = {}
-    for mob, x, y in m.spawns:
-        if mob in spots.monsters:
-            at.setdefault(mob, []).append((x, y))
-    if picture is None and not at:
-        return None
-    order = sorted(at, key=lambda i: (-len(at[i]), spots.monsters[i].name))
-    mobs, dots = [], []
-    for n, i in enumerate(order):
-        mon, colour = spots.monsters[i], DOT_COLOURS[n % len(DOT_COLOURS)]
-        count = len(at[i])
-        line = f"{count} spawn spot{'s' * (count != 1)}"
-        if i in m.respawn:
-            line += f" · respawns {respawn_text(*m.respawn[i])}"
-        stats = f"Lv {mon.level} · {mon.hp:,} HP · {mon.exp:,} EXP"
-        mobs.append(CardMob(i, mon.name, stats, line, colour))
-        dots += [(x, y, colour) for x, y in at[i]]
     street = place.title.rpartition(" / ")[0] if place.title else ""
-    cap = CAP.format(m.cap) if m.cap else None
-    return Card(short_name(place.name), street, picture, m.size, tuple(mobs), cap, tuple(dots))
+    return map_card(spots, place.map_id, short_name(place.name), street)

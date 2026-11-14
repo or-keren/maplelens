@@ -26,6 +26,7 @@ Pick a map, and an arrow over your character points the way (above). Keep the ga
 minimap open: the arrow is placed from it.
 
 - The Path tab lists every map on the route there; tick **Use taxi** to ride the cabs.
+- Search for a monster, an NPC or an item as well as a map: the tab lists where to find it (monsters and items best or closest first), and hovering a place shows its map.
 - The arrow points to the next portal, and to the NPC when you're headed to one.
 - Hidden portals get a hint: "stand on it and press ↑".
 
@@ -196,8 +197,9 @@ rule itself is what matters, and pull requests that break it are not accepted.
 ## Credits
 
 > Map and portal data adapted from [meowdb](https://meowdb.com/msclassic).
-> Minimap and map pictures, item icons, monster pictures and stats, and portal types from [OSMS Data Explorer](https://osmsdataexplorer.com) (CC BY 4.0).
+> Minimap and map pictures, item icons, monster pictures and stats, NPC pictures, and portal types from [OSMS Data Explorer](https://osmsdataexplorer.com) (CC BY 4.0).
 > Quest data adapted from [meowdb](https://meowdb.com/msclassic) (NiaDB) and [OSMS Data Explorer](https://osmsdataexplorer.com) (CC BY 4.0).
+> Drops, shops and NPC spots adapted from [meowdb](https://meowdb.com/msclassic) (NiaDB); drop rates are OSMLib reference rates, via NiaDB.
 >
 > Class plans adapted from the NiaDB class guides:
 >   [beginners-guide-first-steps-in-maple-world](https://meowdb.com/msclassic/guides/beginners-guide-first-steps-in-maple-world) ·

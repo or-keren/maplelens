@@ -40,6 +40,21 @@ def plan(maps: dict[str, MapInfo], start: str, goal: str, taxi: bool) -> list[St
     return steps
 
 
+def distances(maps: dict[str, MapInfo], start: str, taxi: bool) -> dict[str, int]:
+    """Hops from `start` to every map it reaches, by the same edges as `plan`."""
+    if start not in maps:
+        return {}
+    dist = {start: 0}
+    queue = deque([start])
+    while queue:
+        cur = queue.popleft()
+        for to, _ in _edges(maps[cur], taxi):
+            if to in maps and to not in dist:
+                dist[to] = dist[cur] + 1
+                queue.append(to)
+    return dist
+
+
 class Trip:
     def __init__(self, maps: dict[str, MapInfo], start: str, goal: str, taxi: bool, at=None):
         self.maps, self.goal, self.taxi, self.at = maps, goal, taxi, at  # at: NPC world spot

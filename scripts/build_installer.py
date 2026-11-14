@@ -49,6 +49,7 @@ COUNTED = [
     "data/item_icons",
     "data/map_pictures",
     "data/monster_icons",
+    "data/npc_icons",
 ]
 # Files, relative to the app folder, the bundle must have. The self-check opens no
 # window, so it can't miss Qt's Windows platform plugin, without which the app can't show

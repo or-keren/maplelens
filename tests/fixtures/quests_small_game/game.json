@@ -1,0 +1,2 @@
+{"npcs": {"1": {"name": "Heena", "places": [["000000001", -46, 280]]}, "2": {"name": "Sera", "places": [["000000001", 833, 125]]}},
+ "items": {"4000001": {"name": "Snail Shell", "drops": [[2, null]], "shops": []}, "4031000": {"name": "Sera's Mirror", "drops": [], "shops": [1]}}}
