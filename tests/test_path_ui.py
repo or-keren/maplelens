@@ -655,12 +655,21 @@ def rows(tool):
 
 
 def pick_monster(tool, text="snail"):
+    tool._monsters_button.click()
     tool._search.setText(text)
     tool._matches.itemClicked.emit(tool._matches.item(0))
 
 
+def test_maps_is_the_default_and_lists_no_monsters(make):
+    tool = make()
+    assert tool._maps_button.isChecked() and not tool._monsters_button.isChecked()
+    tool._search.setText("snail")
+    assert rows(tool) == [] and tool._matches.isHidden()
+
+
 def test_typing_a_monster_lists_it(make):
     tool = make()
+    tool._monsters_button.click()
     tool._search.setText("sna")
     assert rows(tool) == ["Snail  Lv 1  ›"]
     assert "15 HP" in tool._matches.item(0).toolTip()
@@ -693,6 +702,7 @@ def test_start_after_picking_a_monster_starts_a_trip(make):
 def test_start_on_a_monster_row_goes_to_its_busiest_map(make):
     tool = make()
     feed(tool, title("B"))
+    tool._monsters_button.click()
     tool._search.setText("snail")  # the monster's row is current, never clicked
     tool._start.click()
     assert tool.running and tool.trip.goal == "A"
@@ -701,9 +711,20 @@ def test_start_on_a_monster_row_goes_to_its_busiest_map(make):
 def test_editing_after_a_monster_searches_again(make):
     tool = make()
     pick_monster(tool)
-    tool._search.setText("cher")
-    assert rows(tool) == ["Cherry"]
+    tool._search.setText("sli")  # still a monster search
+    assert rows(tool) == ["Slime  Lv 6  ›"]
     assert tool._monster_line.isHidden()
+
+
+def test_switching_searches_the_text_again(make):
+    tool = make()
+    pick_monster(tool, "s")
+    tool._search.setText("cher")
+    assert rows(tool) == []  # no monster called that
+    assert tool._search.placeholderText() == "Monster name"
+    tool._maps_button.click()
+    assert rows(tool) == ["Cherry"]
+    assert tool._search.placeholderText() == "Map name or street"
 
 
 def test_go_leaves_monster_mode(make):
@@ -713,3 +734,4 @@ def test_go_leaves_monster_mode(make):
     tool.go("C")
     assert tool.running and tool.trip.goal == "C"
     assert tool._monster_line.isHidden()
+    assert tool._maps_button.isChecked()

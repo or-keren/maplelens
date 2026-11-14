@@ -1,10 +1,15 @@
-"""Monster search: which maps a monster spawns on, and the search list with monsters in it."""
+"""Monster search: the monsters matching a name, and the maps each one spawns on."""
 
 from collections import Counter
 from dataclasses import dataclass
 
 from maplelens.spawns import Monster, SpotData
-from maplelens.tools.path_arrow.maps import MapInfo, search
+from maplelens.tools.path_arrow.maps import MapInfo
+
+# OSMS's ids for the copies of monsters made for quests, party quests and events (the
+# job-advancement maps' Lv 30 Fire Boar, the Kerning PQ's King Slime). Field bosses sit
+# in the 700000s and stay.
+SPECIAL_FROM = 800000
 
 
 @dataclass(frozen=True)
@@ -39,23 +44,23 @@ def haunts(spots: SpotData, maps: dict[str, MapInfo], monster_id: str) -> list[H
     return found
 
 
-def matches(
+def find_monsters(
     maps: dict[str, MapInfo], spots: SpotData, text: str, limit: int = 8
-) -> list[MapInfo | MonsterHit]:
-    """`search`'s maps plus the monsters whose name contains `text` and that spawn on a
-    map we can route to; names starting with `text` first, then A-Z, as `search` ranks."""
+) -> list[MonsterHit]:
+    """Monsters whose name contains `text` and that spawn on a map we can route to, special
+    copies left out; names starting with `text` first, then A-Z, as `search` ranks maps."""
     t = text.strip().lower()
     if not t:
         return []
-    hits: list[MapInfo | MonsterHit] = list(search(maps, text, limit=len(maps)))
-    hits += [
+    hits = [
         MonsterHit(i, mon)
         for i, mon in spots.monsters.items()
-        if t in mon.name.lower() and haunts(spots, maps, i)
+        if t in mon.name.lower() and not _special(i) and haunts(spots, maps, i)
     ]
-
-    def name(h: MapInfo | MonsterHit) -> str:
-        return h.monster.name if isinstance(h, MonsterHit) else h.name
-
-    hits.sort(key=lambda h: (not name(h).lower().startswith(t), name(h)))
+    hits.sort(key=lambda h: (not h.monster.name.lower().startswith(t), h.monster.name))
     return hits[:limit]
+
+
+def _special(monster_id: str) -> bool:
+    """A quest, party-quest or event copy: OSMS numbers them from SPECIAL_FROM."""
+    return monster_id.isdigit() and int(monster_id) >= SPECIAL_FROM

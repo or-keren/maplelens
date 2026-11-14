@@ -1,6 +1,7 @@
 # Monster search in the Path tab — design
 
-Status: **draft, waiting for the owner's review.**
+Status: **approved 2026-11-14**; revised the same day after the first build: a Maps /
+Monsters switch instead of one mixed list, and special copies hidden (owner).
 
 ## Why
 
@@ -17,8 +18,14 @@ and nothing is fetched at runtime.
 
 ## Goals
 
-- **One search field finds maps and monsters.** Typing `boar` lists the monsters whose
-  name contains it next to the maps that match. There's no Map / Monster switch.
+- **The player chooses what to search: Maps or Monsters** (owner, after seeing one mixed
+  list: "better to have the user choose"). A two-button switch over the field; Maps is
+  the default, so the tab starts as it does today. Typing `boar` under Monsters lists
+  only the monsters whose name contains it.
+- **Special copies are hidden** (owner). OSMS numbers its quest, party-quest and event
+  copies of monsters from 800000 (the Lv 30 Fire Boar of the job-advancement map, the
+  Kerning PQ's Ligator and King Slime, Primrose Hill's event monsters). Monster search
+  never lists them. Field bosses (700000s: Mano, Mushmom, Stumpy…) stay.
 - **Picking a monster lists its maps**, most spawns first, each with its count and share:
   `The Burnt Land V   26 · 54%`.
 - **Picking one of those maps works like picking a map today:** the field shows its name,
@@ -40,17 +47,17 @@ and nothing is fetched at runtime.
 
 - The search field must keep its focus rules: it takes the keyboard only while you
   type, never the game's (`_Search`).
-- Typing a map name must work exactly as before: the same matches in the same order
-  when no monster matches.
+- Under Maps, typing must work exactly as before: the same matches in the same order.
 
 ## The tab
 
 ```
 ┌ Path ──────────────────────┐
+│  Maps   [Monsters]         │  ← the switch; Maps by default
 │ [ boar                   ] │
 │ ┌────────────────────────┐ │
 │ │ Fire Boar   Lv 32  ›   │ │  ← a monster row (›: opens its maps)
-│ │ Boar ...               │ │
+│ │ Wild Boar   Lv 25  ›   │ │
 │ └────────────────────────┘ │
 │ ☐ Use taxi       [ Start ] │
 └────────────────────────────┘
@@ -69,9 +76,15 @@ and nothing is fetched at runtime.
 
 - **Monster rows** show the name, `Lv N` and a `›`, so they read as "opens more", not
   "goes here". A tooltip gives `Lv 32 · 842 HP · 60 EXP`.
-- **Ranking** *(my call)*: one list, maps and monsters together. Names that start with
-  the text come first, then the rest in A–Z order, the same rule `search` uses now. The
-  limit stays at 8 rows in total.
+- **The switch** *(look my call)*: two small buttons, `Maps` and `Monsters`, styled like
+  the box's tab strip (the chosen one white with a yellow underline, the other grey).
+  They never take focus. Switching searches the field's text again under the new choice.
+  The choice isn't saved; the tab starts on Maps. The field's placeholder says what it
+  searches (`Map name or street` / `Monster name`).
+- **Ranking**: monsters whose name starts with the text first, then the rest A–Z, as
+  `search` ranks maps; at most 8.
+- **`go()`** (a click in the Class or Quests tab) switches to Maps, since it fills the
+  field with a map's name.
 - **A monster's maps**: every map in `maps.json` where it spawns, most spawn spots first;
   ties go to the higher share, then A–Z. The row is the map's name (`name · street` when
   two share a name, as now), then `count · share%`. Long names elide in the middle, as
@@ -79,7 +92,7 @@ and nothing is fetched at runtime.
 - **Picking a monster** puts its name in the field and swaps the list for its maps, with
   the first one current, so **Start right away goes to the busiest map.** A grey line
   above the list names the monster and how many maps it has.
-- **Leaving the monster:** editing the field returns to a normal search.
+- **Leaving the monster:** editing the field returns to the monster search.
 - **Picking a map row** (from either list) works like today's `_pick`: the list closes
   and Start goes there.
 - **A monster whose maps all lack route data** isn't listed at all.
@@ -102,32 +115,35 @@ and nothing is fetched at runtime.
   Tools still don't import each other.
 - **Pure logic, in `tools/path_arrow/maps.py`** (or a small `monsters.py` beside it,
   builder's call), tested without Qt:
-  - `search` returns maps and monsters, ranked as above.
-  - `where(spots, maps, monster_id) -> list[Haunt]` *(name the builder's)* returns map id,
-    count, total, share and types, sorted as above, keeping only maps in `maps.json`.
+  - `search` is unchanged (Maps).
+  - `find_monsters(maps, spots, text)` returns the monsters for the Monsters search, ranked
+    as above, without special copies or monsters that have no map in `maps.json`.
+  - `haunts(spots, maps, monster_id) -> list[Haunt]` returns map id, count, total, share
+    and types, sorted as above, keeping only maps in `maps.json`.
 - **UI, in `tools/path_arrow/ui.py`:**
-  - `_on_text` fills monster rows too. An item's `UserRole` tells a map from a monster
-    (for example `("map", id)` / `("monster", id)`).
+  - The switch: two checkable buttons in an exclusive group above the field.
+  - `_on_text` fills map rows (Maps) or monster rows (Monsters). Map rows keep their id
+    in `Qt.UserRole`; monster rows keep theirs in a role of their own.
   - `_pick` on a monster row fills the field without searching again, shows the grey
-    line, and fills the list from `where`.
-  - `go()` (used by the Class and Quests tabs) is unchanged.
+    line, and fills the list from `haunts`.
+  - `go()` (used by the Class and Quests tabs) switches to Maps first.
 - **AGENTS.md Layout:** the new shared module.
 
 ## Testing
 
-- `tests/test_maps.py`:
-  - search returns monsters as well as maps.
-  - A map-only search gives the same results as before.
-  - A name that starts with the text ranks first.
-  - The limit of 8 still holds.
-- `where` is tested on a small spots fixture: counts, shares, types and the sort, and a
+- `find_monsters`: a name that starts with the text ranks first, the limit of 8 holds,
+  and special copies and monsters with no routable map are left out.
+- `haunts` is tested on a small spots fixture: counts, shares, types and the sort, and a
   map missing from `maps.json` is left out. One check runs on the real data: Fire Boar's
   first row is The Burnt Land V, 26 of 48, matching meowdb.
 - `tests/test_path_ui.py`:
-  - Typing a monster's name shows its row.
+  - Under Maps (the default), typing a monster's name lists no monster.
+  - Under Monsters, typing a monster's name shows its row and no maps.
   - Clicking it shows its maps, most spawns first, with the first one current.
   - Start then begins a trip to that map.
-  - Editing the field goes back to a normal search.
+  - Editing the field goes back to the monster search; switching to Maps searches the
+    text as a map name.
+  - `go()` from Monsters switches back to Maps and starts the trip.
 - `tests/test_spot_data.py` and `test_class_ui.py` still pass after the move.
 
 ## Done means

@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from maplelens.spawns import MapSpawns, Monster, SpotData, load_spots
-from maplelens.tools.path_arrow.maps import MapInfo, load, search
-from maplelens.tools.path_arrow.monsters import Haunt, MonsterHit, haunts, matches
+from maplelens.tools.path_arrow.maps import MapInfo, load
+from maplelens.tools.path_arrow.monsters import Haunt, MonsterHit, find_monsters, haunts
 
 
 def M(id, name, street="Road"):
@@ -25,18 +25,19 @@ MONSTERS = {
     "b": Monster("Blue Snail", 2, 30, 2),
     "m": Monster("Mushroom", 5, 80, 4),
     "g": Monster("Ghost", 9, 200, 9),  # spawns only on a map we have no route data for
+    "800001": Monster("Snail", 30, 700, 50),  # a special copy (a quest map's)
 }
 
 
 def spots(**by_map: str) -> SpotData:
-    """Each map's spawns as a string of monster ids, one letter per spot."""
+    """Each map's spawns as monster ids, one per spot (a string: one letter per spot)."""
     maps = {
         i: MapSpawns((10, 10), None, tuple((m, 0, 0) for m in s), {}) for i, s in by_map.items()
     }
     return SpotData(maps, MONSTERS, Path("."), Path("."))
 
 
-SPOTS = spots(**{"1": "sssb", "2": "sss", "3": "sm", "4": "sb", "9": "sssssg"})
+SPOTS = spots(**{"1": "sssb", "2": "sss", "3": "sm", "4": "sb", "5": ["800001"], "9": "sssssg"})
 
 
 def test_haunts_counts_and_sorts():
@@ -56,30 +57,32 @@ def test_haunts_skips_maps_without_route_data():
     assert haunts(SPOTS, MAPS, "nobody") == []
 
 
-def test_matches_is_search_when_no_monster_matches():
-    for text in ("pie", "ROAD", "rr", "", "   "):
-        assert matches(MAPS, SPOTS, text) == search(MAPS, text)
-
-
-def test_matches_ranks_maps_and_monsters_together():
-    # names starting with the text first, then A-Z, whether map or monster; a street
-    # match ("Snail Street") counts as for search
-    assert matches(MAPS, SPOTS, "snail") == [
+def test_find_monsters_ranks_names_starting_with_the_text_first():
+    assert find_monsters(MAPS, SPOTS, "snail") == [
         MonsterHit("s", MONSTERS["s"]),
-        MAPS["5"],
         MonsterHit("b", MONSTERS["b"]),
-        MAPS["6"],
     ]
+    assert find_monsters(MAPS, SPOTS, "") == find_monsters(MAPS, SPOTS, "  ") == []
 
 
-def test_matches_skips_monsters_without_haunts():
-    assert matches(MAPS, SPOTS, "ghost") == []
-    assert matches(MAPS, SPOTS, "mush") == [MonsterHit("m", MONSTERS["m"])]
+def test_find_monsters_hides_special_copies():
+    # the Lv 30 Snail spawns on a routable map, but it's a quest copy (id 800000 and up)
+    assert all(h.id != "800001" for h in find_monsters(MAPS, SPOTS, "snail"))
 
 
-def test_matches_limit():
-    assert len(matches(MAPS, SPOTS, "snail", limit=3)) == 3
-    assert len(matches(MAPS, SPOTS, "a", limit=2)) == 2
+def test_find_monsters_skips_monsters_without_haunts():
+    assert find_monsters(MAPS, SPOTS, "ghost") == []
+    assert find_monsters(MAPS, SPOTS, "mush") == [MonsterHit("m", MONSTERS["m"])]
+
+
+def test_find_monsters_limit():
+    assert len(find_monsters(MAPS, SPOTS, "snail", limit=1)) == 1
+
+
+def test_real_data_lists_one_fire_boar_and_the_field_bosses():
+    spots, maps = load_spots(), load()
+    assert [h.id for h in find_monsters(maps, spots, "fire boar")] == ["30"]  # not 800016
+    assert [h.monster.name for h in find_monsters(maps, spots, "mano")] == ["Mano"]
 
 
 def test_fire_boar_matches_meowdb():

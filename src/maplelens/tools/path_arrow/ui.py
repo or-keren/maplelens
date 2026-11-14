@@ -7,10 +7,13 @@ from html import escape
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
+    QHBoxLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -20,6 +23,7 @@ from maplelens.overlay import (
     ACCENT,
     DARK,
     FIELD_STYLE,
+    FONT,
     LABEL_COLOR,
     LABEL_PT,
     TAB_W,
@@ -34,8 +38,8 @@ from maplelens.overlay import (
 from maplelens.readers import Reading, glyphs
 from maplelens.spawns import SpotData, load_spots
 from maplelens.tools.path_arrow.camera import by_size, can_place, fits, player_world, to_screen
-from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture
-from maplelens.tools.path_arrow.monsters import MonsterHit, haunts, matches
+from maplelens.tools.path_arrow.maps import MapInfo, find, load, picture, search
+from maplelens.tools.path_arrow.monsters import find_monsters, haunts
 from maplelens.tools.path_arrow.route import Trip, plan
 
 # Normalized px from the feet (the dot's world spot) up to the arrow's centre: just above
@@ -60,6 +64,13 @@ NAME_ROLE = Qt.UserRole + 2
 _MORE = chr(0x203A)  # single right angle, as a Row's: a monster row opens its maps
 _DONE, _AHEAD, _NUM = "#6f7d93", "#c9d3e3", "#7b8aa3"  # mockup 3's route list
 _STYLE = FIELD_STYLE + f"QCheckBox {{ color: {VALUE_COLOR}; }}"
+# The Maps / Monsters switch, drawn like the box's tab strip: the chosen one white and
+# underlined in yellow.
+_KIND_STYLE = f"""
+QPushButton {{ color: {LABEL_COLOR}; border: 0; border-bottom: 2px solid transparent;
+    padding: 1px 0; }}
+QPushButton:checked {{ color: {VALUE_COLOR}; border-bottom-color: {ACCENT}; }}"""
+PLACEHOLDER = {True: "Map name or street", False: "Monster name"}  # by "searching maps"
 
 
 class _Arrow(QWidget):
@@ -154,7 +165,22 @@ class PathArrowTool:
         self._message = text_label("", LABEL_PT, ACCENT)
         self._message.setWordWrap(True)
         self._info = InfoLine()
+        self._maps_button = _kind_button("Maps")
+        self._monsters_button = _kind_button("Monsters")
+        self._maps_button.setChecked(True)
+        self._kind_group = QButtonGroup(tab)  # exclusive: one is always chosen
+        for b in (self._maps_button, self._monsters_button):
+            self._kind_group.addButton(b)
+        self._kind_group.buttonClicked.connect(lambda _: self._on_kind())
+        kinds = QWidget()
+        row = QHBoxLayout(kinds)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        row.addWidget(self._maps_button)
+        row.addWidget(self._monsters_button)
+        row.addStretch()
         self._search = _Search(self._set_typing)
+        self._search.setPlaceholderText(PLACEHOLDER[True])
         self._search.textChanged.connect(self._on_text)
         self._monster_line = text_label("", LABEL_PT, LABEL_COLOR)  # over a monster's maps
         self._monster_line.hide()
@@ -180,7 +206,7 @@ class PathArrowTool:
         for page, widgets in [
             (
                 self._choose,
-                [self._search, self._monster_line, self._matches, self._taxi, self._start],
+                [kinds, self._search, self._monster_line, self._matches, self._taxi, self._start],
             ),
             (self._running, [self._route_list, self._stop]),
         ]:
@@ -275,20 +301,27 @@ class PathArrowTool:
         self._note = ""
         self._monster_line.hide()
         self._matches.clear()
-        hits = matches(self.maps, self._spots, text)
-        names = [h.name for h in hits if isinstance(h, MapInfo)]
-        for h in hits:
-            if isinstance(h, MonsterHit):
+        if self._maps_button.isChecked():
+            hits = search(self.maps, text)
+            names = [m.name for m in hits]
+            for m in hits:
+                item = QListWidgetItem(_map_label(m, names))
+                item.setData(Qt.UserRole, m.id)
+                item.setToolTip(m.title)
+                self._matches.addItem(item)
+        else:
+            for h in find_monsters(self.maps, self._spots, text):
                 mon = h.monster
                 item = QListWidgetItem(f"{mon.name}  Lv {mon.level}  {_MORE}")
                 item.setData(MONSTER_ROLE, h.id)
                 item.setToolTip(f"Lv {mon.level} · {mon.hp:,} HP · {mon.exp:,} EXP")
-            else:
-                item = QListWidgetItem(_map_label(h, names))
-                item.setData(Qt.UserRole, h.id)
-                item.setToolTip(h.title)
-            self._matches.addItem(item)
+                self._matches.addItem(item)
         self._show_matches()
+
+    def _on_kind(self) -> None:
+        """Maps or Monsters was chosen: search the field's text again as that."""
+        self._search.setPlaceholderText(PLACEHOLDER[self._maps_button.isChecked()])
+        self._on_text(self._search.text())
 
     def _show_matches(self) -> None:
         """Open the list on its first row, MATCH_ROWS tall; closed when empty."""
@@ -350,6 +383,10 @@ class PathArrowTool:
         With `at`, the trip goes on to that spot on the map; `label` names it.
         """
         m = self.maps[map_id]
+        if not self._maps_button.isChecked():  # it fills the field with a map's name
+            self._maps_button.setChecked(True)
+            self._search.setPlaceholderText(PLACEHOLDER[True])
+            self._monster_line.hide()
         self._search.setText(m.name)  # fills the match list
         item = next(
             (
@@ -513,3 +550,15 @@ class PathArrowTool:
 def _map_label(m: MapInfo, names: list[str]) -> str:
     """The map's name, with its street when another listed map shares the name."""
     return f"{m.name} · {m.street}" if names.count(m.name) > 1 else m.name
+
+
+def _kind_button(text: str) -> QPushButton:
+    """One side of the Maps / Monsters switch; never takes the game's keyboard."""
+    button = QPushButton(text)
+    button.setCheckable(True)
+    button.setFlat(True)
+    button.setFocusPolicy(Qt.NoFocus)
+    button.setCursor(Qt.PointingHandCursor)
+    button.setFont(QFont(FONT, LABEL_PT, QFont.Bold))
+    button.setStyleSheet(_KIND_STYLE)
+    return button
