@@ -442,3 +442,81 @@ def test_session_is_the_sum_of_its_segments_at_different_paces():
     segs = [*m.pop_closed(), m.open_segment()]
     assert m.session().active_s == pytest.approx(sum(s.active_s for s in segs))
     assert segs[-1].active_s > 600  # the slow map counts
+
+
+def _hunt(m, t0, n, pct, step_s=30, **kw):
+    """`n` kills `step_s` apart from `t0`, each +0.5%; returns the % reached."""
+    for i in range(n):
+        feed(m, t0 + i * step_s, int(pct * 100), pct, **kw)
+        pct += 0.5
+    return pct
+
+
+def _exp(s):
+    return s.exp_per_min * s.active_s / 60
+
+
+def test_a_carried_session_goes_on_without_the_paused_gains():
+    a = ExpMeter()
+    pct = _hunt(a, 0, 13, 10.0)  # tracked
+    a.close(400)
+    paused_pct = _hunt(ExpMeter(), 500, 10, pct)  # hunted while paused: no meter sees it
+    b = ExpMeter(carry=a.session_parts())
+    _hunt(b, 1000, 13, paused_pct, map_name="Other Map")  # Start: a fresh baseline
+    after = ExpMeter()  # the same readings after Start, alone
+    _hunt(after, 1000, 13, paused_pct, map_name="Other Map")
+    s, held, new = b.session(), a.session(), after.session()
+    assert s.active_s == pytest.approx(held.active_s + new.active_s)
+    assert _exp(s) == pytest.approx(_exp(held) + _exp(new))
+    assert [p.map_name for p in b.session_parts()] == [MAP, "Other Map"]
+
+
+def test_a_carried_session_matches_one_fed_straight_through():
+    # the same map's kills either side of a pause, the pause's readings left out
+    straight = ExpMeter()
+    pct = _hunt(straight, 0, 5, 10.0)
+    _hunt(straight, 150, 5, pct, map_name="Other Map")  # a second segment, no pause
+    a = ExpMeter()
+    pct = _hunt(a, 0, 5, 10.0)
+    a.close(130)
+    b = ExpMeter(carry=a.session_parts())
+    feed(b, 120, int((pct - 0.5) * 100), pct - 0.5, map_name="Other Map")  # Start's baseline
+    _hunt(b, 150, 5, pct, map_name="Other Map")
+    assert b.session() == straight.session()
+
+
+def test_the_carried_parts_keep_their_segment():
+    m = ExpMeter()
+    _hunt(m, 0, 5, 10.0, level=30, job="Hunter")
+    (part,) = m.session_parts()
+    assert (part.map_name, part.job, part.level, len(part.gains)) == (MAP, "Hunter", 30, 4)
+
+
+@pytest.mark.parametrize("split, active", [(True, 30), (False, 120 + 30)])
+def test_without_the_split_a_long_gap_keeps_the_session(split, active):
+    m = ExpMeter(split=split)
+    steady(m, 5)  # counted gains at 30..120: 120 s
+    feed(m, 120 + 3600 - 30, 5000, 50.0)  # an hour later: starts the clock only
+    feed(m, 120 + 3600, 5100, 50.5)
+    assert m.session().active_s == pytest.approx(active)
+
+
+def test_the_split_turned_on_counts_from_then():
+    m = ExpMeter(split=False)
+    steady(m, 5)  # counted gains at 30..120
+    m.set_split(True, 3000)  # manual -> auto, long after the last gain
+    feed(m, 3000 + 1790 - 30, 5000, 50.0)
+    feed(m, 3000 + 1790, 5100, 50.5)  # under 30 min after the switch: the session goes on
+    assert m.session().active_s == pytest.approx(120 + 30)
+    feed(m, 3000 + 1790 + 1801 - 30, 6000, 60.0)
+    feed(m, 3000 + 1790 + 1801, 6100, 60.5)  # then over 30 min without EXP: it splits
+    assert m.session().active_s == pytest.approx(30)
+
+
+def test_a_carried_session_splits_from_the_fresh_meters_start():
+    a = ExpMeter()
+    pct = _hunt(a, 0, 5, 10.0)
+    a.close(130)
+    b = ExpMeter(carry=a.session_parts())  # paused for an hour, then back in auto
+    _hunt(b, 3600, 3, pct)
+    assert b.session().active_s == pytest.approx(120 + 60)

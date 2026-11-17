@@ -1,7 +1,6 @@
 """The EXP meter tool: a tab with live numbers and a History window."""
 
 import sqlite3
-import sys
 import time
 from collections.abc import Callable, Collection
 
@@ -25,14 +24,19 @@ from maplelens.overlay import (
     TAB_W,
     VALUE_COLOR,
     VALUE_PT,
-    native_setup,
+    FloatingWindow,
+    primary_button,
     secondary_button,
+    setting_choice,
     text_label,
 )
 from maplelens.readers import Reading
 from maplelens.tools.exp_meter.history import MIN_VISIT_S, best_maps, history, save_segment
 from maplelens.tools.exp_meter.meter import ExpMeter
+from maplelens.tools.exp_meter.session import AUTO, MANUAL, Session, State, Step
 from maplelens.tools.exp_meter.text import (
+    PAUSED,
+    PRESS_START,
     Column,
     best_lines,
     box_lines,
@@ -45,6 +49,14 @@ from maplelens.tools.exp_meter.text import (
 _FLUSH_S = 60
 _UNREAD_S = 10  # the bar unreadable this long, with the game found: say so
 _COLUMNS = ["Map", "Class", "Lvl", "Avg EXP/h", "Avg %/h", "Active time", "Last there"]
+START, PAUSE, RESUME, RESET = "Start", "Pause", "Resume", "Reset"
+SESSIONS = "Sessions"
+# The EXP card's choices, and the line under each
+SESSION_MODES = {AUTO: "Track automatically", MANUAL: "Track when I press Start"}
+SESSION_HINTS = {
+    AUTO: "A session ends after 30 minutes without EXP",
+    MANUAL: "Start, Pause and Reset on the EXP tab",
+}
 
 
 class _Item(QTableWidgetItem):
@@ -61,7 +73,7 @@ class _Item(QTableWidgetItem):
 JobLine = Callable[[str], Collection[str]]
 
 
-class HistoryWindow(QWidget):
+class HistoryWindow(FloatingWindow):
     """The "Best for you now" strip above the per-map/class/level table."""
 
     def __init__(self, conn: sqlite3.Connection, job_line: JobLine = lambda j: {j}):
@@ -80,14 +92,6 @@ class HistoryWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(self._best)
         layout.addWidget(table, 1)
-        self.setAttribute(Qt.WA_QuitOnClose, False)  # closing it must not end the app
-        # Over the game, leaving it the keyboard, as the box does. On the Mac, native_setup
-        # makes it a panel that does both.
-        self.setWindowFlag(Qt.Tool)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        if sys.platform != "darwin":
-            self.setWindowFlag(Qt.WindowStaysOnTopHint)
-            self.setWindowFlag(Qt.WindowDoesNotAcceptFocus)
         self.resize(880, 460)
 
     def _show_best(self, job: str | None, level: int | None) -> None:
@@ -126,10 +130,6 @@ class HistoryWindow(QWidget):
         table.setSortingEnabled(True)
         table.sortItems(len(_COLUMNS) - 1, Qt.DescendingOrder)
         table.resizeColumnToContents(0)  # map names in full
-
-    def showEvent(self, event):
-        native_setup(self)
-        super().showEvent(event)
 
 
 class PinLine(QWidget):
@@ -180,9 +180,19 @@ class ExpMeterTool:
         self._conn = conn
         self._settings, self._save_settings, self._show_pin = settings, save, show_pin
         self.pin_line = PinLine(open_tab)  # the box's footer: on every tab but this one
-        self._meter = ExpMeter(settings["idle_cutoff_s"], settings["jump_factor"])
+        self._session = Session(settings["exp_session_mode"])
+        # measuring while tracking; while paused, the closed meter holds the session (its
+        # segments saved), which the next Start carries on; else None
+        self._meter: ExpMeter | None = None
+        self._held: ExpMeter | None = None
+        self._paused_rate = None  # the live rate at Pause, kept on screen until Resume
+        self._tracked_s = 0.0  # manual mode's timer: time tracked before the current stretch
+        self._since: float | None = None  # when the current stretch of tracking began
+        if self._session.state == State.TRACKING:
+            self._meter = self._new_meter(())
         self._last_flush: float | None = None
         self._exp_seen: float | None = None  # last tick the bar was read, or the game was gone
+        self._waiting, self._unread = True, False  # as of the last tick
         self._history = HistoryWindow(conn, job_line)
         self.title = "EXP"
         self.tab = QWidget()
@@ -192,16 +202,26 @@ class ExpMeterTool:
         self._lines.setSpacing(0)
         self._pin = secondary_button("", self._toggle_pin)
         self._label_pin()
+        # manual mode's Start or Pause, and Reset, over History and Pin; the same buttons in
+        # every state, so the tab never changes height but by mode
+        self._start = primary_button(START, lambda: self.start(time.time()))
+        self._pause = secondary_button(PAUSE, lambda: self.pause(time.time()))
+        self._reset = secondary_button(RESET, lambda: self.reset(time.time()))
+        self._session_row = _row(self._start, self._pause, self._reset)
         self._button_row = QWidget()
-        buttons = QHBoxLayout(self._button_row)
-        buttons.setContentsMargins(0, 0, 0, 0)
-        buttons.setSpacing(8)
-        buttons.addWidget(secondary_button("History", self._show_history))
-        buttons.addWidget(self._pin)
+        rows = QVBoxLayout(self._button_row)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(6)
+        rows.addWidget(self._session_row)  # hidden in auto: no space, no spacing
+        rows.addWidget(_row(secondary_button("History", self._show_history), self._pin))
         self._shape: list[list[int]] | None = None  # values per row of what's shown
         self._texts: list[QLabel] = []
-        self._show(box_lines(None, None, True))
-        self.pin_line.set_text(*pin_text(None, True))  # never blank, even before a tick
+        self._show_buttons()
+        self._refresh(time.time())  # waiting for game, never blank, even before a tick
+
+    def _new_meter(self, carry) -> ExpMeter:
+        s, split = self._settings, self._session.split
+        return ExpMeter(s["idle_cutoff_s"], s["jump_factor"], carry=carry, split=split)
 
     def set_tab_w(self, width: int) -> None:
         self.tab.setFixedWidth(width)
@@ -254,13 +274,16 @@ class ExpMeterTool:
         self._lines.addWidget(self._button_row)
 
     def _show_history(self) -> None:
-        self._history.refresh(self._meter.job, self._meter.level)
-        self._history.show()
-        self._history.raise_()
+        meter = self._meter or self._held
+        self._history.refresh(*((meter.job, meter.level) if meter else (None, None)))
+        self._history.open()
 
     def _save(self, now: float, *, flush_open: bool) -> None:
         def kept(seg) -> bool:
             return seg.end - seg.start >= MIN_VISIT_S
+
+        if self._meter is None:
+            return
 
         for seg in self._meter.pop_closed():
             if kept(seg):
@@ -270,18 +293,143 @@ class ExpMeterTool:
             self._last_flush = now
 
     def update(self, r: Reading | None, _game_rect: tuple | None, now: float) -> None:
-        self._meter.feed(r)
-        if self._last_flush is None:
-            self._last_flush = now
-        self._save(now, flush_open=now - self._last_flush >= _FLUSH_S)
+        if self._meter is not None:  # not tracking or paused: nothing is recorded
+            self._meter.feed(r)
+            if self._last_flush is None:
+                self._last_flush = now
+            self._save(now, flush_open=now - self._last_flush >= _FLUSH_S)
         if r is None or r.exp is not None or self._exp_seen is None:
             self._exp_seen = now
-        unread = now - self._exp_seen > _UNREAD_S
-        rate = self._meter.rate(now)
-        self._show(box_lines(rate, self._meter.session(), r is None, unread))
-        self._texts[0].setStyleSheet(f"color: {ACCENT if unread else LABEL_COLOR};")
-        self.pin_line.set_text(*pin_text(rate, r is None, unread))
+        self._waiting, self._unread = r is None, now - self._exp_seen > _UNREAD_S
+        self._refresh(now)
+
+    def _refresh(self, now: float) -> None:
+        """The tab and the pinned line, from the last tick's game and bar."""
+        held = {State.NOT_TRACKING: PRESS_START, State.PAUSED: PAUSED}.get(self._session.state)
+        meter = self._meter or self._held
+        rate = self._meter.rate(now) if self._meter else None
+        if self._session.state == State.PAUSED:
+            rate = self._paused_rate
+        session = meter.session() if meter else None
+        timer = self._timer(now) if self._session.mode == MANUAL else None
+        self._show(box_lines(rate, session, self._waiting, self._unread, held, timer=timer))
+        accent = self._unread and not self._waiting and not held
+        self._texts[0].setStyleSheet(f"color: {ACCENT if accent else LABEL_COLOR};")
+        self.pin_line.set_text(*pin_text(rate, self._waiting, self._unread, held))
+
+    def _do(self, step: Step, now: float) -> None:
+        """Carry out a session event's step on the meter."""
+        if step.close and self._meter is not None:
+            self._meter.close(now)
+            self._save(now, flush_open=False)  # the open segment, as on quit
+            self._held, self._meter = self._meter, None
+        if not step.carry:
+            self._held = None  # the session ended; its segments are saved
+        if self._session.state != State.PAUSED:
+            self._paused_rate = None
+        if step.open:
+            self._meter = self._new_meter(self._held.session_parts() if self._held else ())
+            self._held = None
+            self._last_flush = None
+        self._run_clock(now)
+        self._show_buttons()
+
+    def _run_clock(self, now: float) -> None:
+        """Manual mode's timer follows the session: it runs while tracking, holds while
+        paused, and goes back to 0:00 once the session ends."""
+        state = self._session.state
+        if self._since is not None and state != State.TRACKING:
+            self._tracked_s += now - self._since
+            self._since = None
+        if state == State.NOT_TRACKING:
+            self._tracked_s = 0.0
+        if state == State.TRACKING and self._since is None:
+            self._since = now
+
+    def _timer(self, now: float) -> float | None:
+        """Seconds tracked in this session, pauses left out; None before Start."""
+        if self._session.state == State.NOT_TRACKING:
+            return None
+        return self._tracked_s + (now - self._since if self._since is not None else 0.0)
+
+    def _show_buttons(self) -> None:
+        state = self._session.state
+        self._session_row.setVisible(self._session.mode == MANUAL)
+        self._start.setVisible(state != State.TRACKING)
+        self._start.setText(RESUME if state == State.PAUSED else START)
+        self._pause.setVisible(state == State.TRACKING)
+        self._reset.setEnabled(state != State.NOT_TRACKING)
+
+    def start(self, now: float) -> None:
+        """Manual Start, or Resume after a Pause: a new session, or the paused one goes on,
+        its live rate measured afresh."""
+        self._do(self._session.start(), now)
+        self._refresh(now)
+
+    def pause(self, now: float) -> None:
+        """Manual Pause: the visit is saved and nothing counts until Resume; the numbers
+        stay on screen as they were."""
+        if self._meter is not None and self._session.state == State.TRACKING:
+            self._paused_rate = self._meter.rate(now)
+        self._do(self._session.pause(), now)
+        self._refresh(now)
+
+    def reset(self, now: float) -> None:
+        """Manual Reset: the session ends and is saved; nothing is tracked until Start."""
+        self._do(self._session.reset(), now)
+        self._refresh(now)
+
+    def set_session_mode(self, mode: str) -> None:
+        """The EXP card's choice: a running session carries on (session.py)."""
+        if mode == self._settings["exp_session_mode"]:
+            return
+        now = time.time()
+        self._settings["exp_session_mode"] = mode
+        self._do(self._session.set_mode(mode), now)
+        if self._meter is not None:
+            self._meter.set_split(self._session.split, now)
+        self._refresh(now)
+        self._save_settings()
+
+    def settings_section(self) -> QWidget:
+        """The EXP section of the Settings window: how sessions start and end."""
+        section = QWidget()
+        rows = QVBoxLayout(section)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(2)
+        rows.addWidget(QLabel(SESSIONS))
+        choices = setting_choice(
+            SESSION_MODES, self._settings["exp_session_mode"], self.set_session_mode
+        )
+        for mode, choice in zip(SESSION_MODES, choices, strict=True):
+            rows.addSpacing(4)
+            rows.addWidget(choice)
+            hint = QLabel(SESSION_HINTS[mode])
+            hint.setObjectName("hint")
+            hint.setContentsMargins(22, 0, 0, 0)  # under the choice's text, past its ring
+            rows.addWidget(hint)
+        return section
 
     def shutdown(self, now: float) -> None:
-        self._meter.close(now)
-        self._save(now, flush_open=False)
+        if self._meter is not None:
+            self._meter.close(now)
+            self._save(now, flush_open=False)
+
+    def stop(self, now: float) -> None:
+        """Turned off in Settings: the session ends and is saved, as on quit; in auto a fresh
+        one starts when it's on again, in manual it waits for Start."""
+        self._do(self._session.reset(), now)
+        self._last_flush = self._exp_seen = None
+        self._waiting, self._unread = True, False
+        self._refresh(now)
+
+
+def _row(*buttons: QWidget) -> QWidget:
+    """Buttons side by side in equal parts of the tab's width."""
+    row = QWidget()
+    line = QHBoxLayout(row)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(8)
+    for b in buttons:
+        line.addWidget(b, 1)
+    return row

@@ -2,6 +2,7 @@
 
 import json
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
@@ -64,6 +65,18 @@ class Segment:
     gains: list[tuple[float, int, float, float]] = field(default_factory=list, repr=False)
 
 
+@dataclass
+class SessionPart:
+    """A session's counted gains on one segment, with its map, job and level: each part
+    learns its own pace for the break filter, as History's segments do, so a slow map's
+    kills aren't breaks next to a fast one's."""
+
+    map_name: str
+    job: str
+    level: int
+    gains: list[tuple[float, int, float, float]] = field(default_factory=list, repr=False)
+
+
 # A map, job or level that stops reading in a frame that shows the game keeps its value this
 # long: a window over the minimap, or a misread, isn't the player leaving it.
 HOLD_S = 120
@@ -114,7 +127,19 @@ def _totals(gains, idle_cutoff_s: float) -> tuple[int, float, float]:
 
 
 class ExpMeter:
-    def __init__(self, idle_cutoff_s: float = 90, jump_factor: float = 5, window_s: float = 300):
+    """`carry`: a held session's parts (`session_parts()` of a closed meter), which this one
+    goes on with; it measures afresh from its own first reading, so nothing earned between the
+    two is credited. `split`: whether SESSION_BREAK_S without counted EXP ends the session."""
+
+    def __init__(
+        self,
+        idle_cutoff_s: float = 90,
+        jump_factor: float = 5,
+        window_s: float = 300,
+        *,
+        carry: Sequence[SessionPart] = (),
+        split: bool = True,
+    ):
         self.idle_cutoff_s = idle_cutoff_s
         self.jump_factor = jump_factor
         self.window_s = window_s
@@ -132,13 +157,17 @@ class ExpMeter:
         self._seg: Segment | None = None
         self._closed: list[Segment] = []
         self._last_event_t: float | None = None  # the segment's clock: its start or last gain
-        # the session's gains, one list per segment: each learns its own pace for the break
-        # filter, as History's segments do, so a slow map's kills aren't breaks next to a fast one's
-        self._session: list[list[tuple[float, int, float, float]]] = []
-        self._session_seg: Segment | None = None  # whose gains the last list holds
+        self._session: list[SessionPart] = list(carry)
+        self._session_seg: Segment | None = None  # whose gains the last part holds
+        self._split = split
+        # the split's 30 minutes count from the last counted gain, or from this, if later: the
+        # meter's first reading, or the split turned on (a carried or manual session goes on)
+        self._split_from: float | None = None
 
     def feed(self, r: Reading | None) -> None:
         t = r.t if r else None
+        if self._split_from is None:
+            self._split_from = t
         vals = (r.exp, r.level, r.job, r.map_name) if r else (None,) * 4
         exp_ch, *_ = (f.update(v, t) for f, v in zip(self._fields, vals, strict=True))
 
@@ -217,14 +246,26 @@ class ExpMeter:
                 last = self._last_event_t
                 if last is not None and (gap := t - last) <= self.idle_cutoff_s:
                     seg.gains.append((t, *gain, gap))
-                    if self._session and t - self._session[-1][-1][0] > SESSION_BREAK_S:
+                    if self._split and self._session and t - self._session_t() > SESSION_BREAK_S:
                         self._session = []
                     if not self._session or self._session_seg is not seg:
-                        self._session.append([])
+                        self._session.append(SessionPart(seg.map_name, seg.job, seg.level))
                         self._session_seg = seg
-                    self._session[-1].append(seg.gains[-1])
+                    self._session[-1].gains.append(seg.gains[-1])
                 self._last_event_t = t
             seg.end = t
+
+    def _session_t(self) -> float:
+        """The time the split's 30 minutes count from."""
+        last = self._session[-1].gains[-1][0]
+        return last if self._split_from is None else max(last, self._split_from)
+
+    def set_split(self, on: bool, now: float) -> None:
+        """Turn the 30-minute split on or off (the session mode changed); turned on, its 30
+        minutes count from `now` at the earliest."""
+        if on and not self._split:
+            self._split_from = now
+        self._split = on
 
     def _close(self, t: float) -> None:
         if self._seg:
@@ -256,9 +297,13 @@ class ExpMeter:
             return None
         # ponytail: re-sums every segment's gains each tick; cache closed segments' totals if
         # long sessions show up in a profile
-        totals = [_totals(gains, self.idle_cutoff_s) for gains in self._session]
+        totals = [_totals(p.gains, self.idle_cutoff_s) for p in self._session]
         exp, active = sum(t[0] for t in totals), sum(t[2] for t in totals)
         return SessionRate(exp / active * 60 if active >= 60 else None, active)
+
+    def session_parts(self) -> tuple[SessionPart, ...]:
+        """The session so far, for a fresh meter to carry on (Start after a Pause)."""
+        return tuple(self._session)
 
     @property
     def job(self) -> str | None:

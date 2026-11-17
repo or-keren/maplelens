@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 from shiboken6 import delete, isValid
 
 from maplelens.gamedata import SpotData, load_spots
@@ -12,6 +12,7 @@ from maplelens.overlay import (
     ACCENT,
     BOX_FILL,
     CHIP_BG,
+    DIM,
     FONT,
     HERE_BG,
     LABEL_COLOR,
@@ -21,6 +22,8 @@ from maplelens.overlay import (
     Layer,
     Row,
     game_to_layer,
+    setting_box,
+    setting_hint,
     text_label,
 )
 from maplelens.readers import Reading, glyphs
@@ -44,6 +47,7 @@ from maplelens.tools.class_helper.plan import (
 )
 
 MARKS = "AP/SP marks on game windows"
+BUILDS = "Build for each job"
 NO_CLASS = "Can't read your class yet"
 NO_PLAN = "No plan for {} yet"
 TRAIN = "Train here · click to go"
@@ -121,6 +125,49 @@ def _go_map(place: Place | None) -> str | None:
     return place.map_id if place else None
 
 
+class _BuildSwitch(QWidget):
+    """A job's build in Settings: its name, then its builds side by side, the chosen one
+    yellow and bold, as the Quests tab's Closest | Best."""
+
+    def __init__(
+        self, job: str, names: list[str], chosen: str, on_pick: Callable[[str, str], None]
+    ):
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(QLabel(job))
+        row.addStretch()
+        self.buttons: dict[str, QPushButton] = {}
+        for i, name in enumerate(names):
+            if i:
+                bar = QLabel("|")
+                bar.setObjectName("hint")
+                row.addWidget(bar)
+            button = QPushButton(name)
+            button.setFlat(True)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setCursor(Qt.PointingHandCursor)
+            button.clicked.connect(lambda _=False, n=name: on_pick(job, n))
+            row.addWidget(button)
+            self.buttons[name] = button
+        self.show_chosen(chosen)
+
+    def show_chosen(self, chosen: str) -> None:
+        for name, button in self.buttons.items():
+            on = name == chosen
+            color, weight = (ACCENT, "bold") if on else (LABEL_COLOR, "normal")
+            button.setStyleSheet(
+                f"QPushButton {{ color: {color}; font-weight: {weight}; border: 0; padding: 0;"
+                f' font-family: "{FONT}"; font-size: {LABEL_PT}pt; }}'
+                f" QPushButton:disabled {{ color: {DIM}; }}"
+            )
+
+    @property
+    def chosen(self) -> str | None:
+        return next((n for n, b in self.buttons.items() if "bold" in b.styleSheet()), None)
+
+
 class ClassHelperTool:
     def __init__(  # noqa: PLR0913, PLR0917 - the tool's collaborators, as the other tools take
         self,
@@ -134,10 +181,10 @@ class ClassHelperTool:
     ):
         self.title = "Class"
         self.dot = False
-        self.builds_changed: Callable[[], None] = lambda: None  # the menu's Build item follows
-        self._builds_seen: tuple | None = None  # (job, build names, build) last told
+        self._switches: dict[str, _BuildSwitch] = {}  # job -> its switch in Settings, once built
         self._settings, self._changed = settings, on_settings_changed
         self._layer, self._go, self._best_rate = layer, go, best_rate
+        self._can_go = True  # trips can start: the Path tab is on
         self._data = load() if data is None else data
         self._job: str | None = None
         self._level: int | None = None
@@ -176,12 +223,59 @@ class ClassHelperTool:
         items, self._shown = self._shown, None  # the names are cut to the width
         self._render(items)
 
+    def set_can_go(self, on: bool) -> None:
+        """Whether a row's click can start a trip; with Path off it can't, so no row is
+        clickable and none shows the yellow angle."""
+        if on == self._can_go:
+            return
+        self._can_go = on
+        items, self._shown = self._shown, None
+        if items is not None:
+            self._render(items)
+
     def hide_marks(self) -> None:
         for m in self._pool:
             m.hide()
 
+    def settings_section(self) -> QWidget:
+        """The Class section of the Settings window."""
+        section = QWidget()
+        rows = QVBoxLayout(section)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.addWidget(setting_box(MARKS, self._settings.get("class_marks", True), self.set_marks))
+        jobs = self.build_jobs()
+        if jobs:
+            rows.addSpacing(6)
+            rows.addWidget(setting_hint(BUILDS))
+        self._switches = {}
+        for plan in jobs:
+            chosen = plan.build(self._choices().get(plan.job)).name
+            switch = _BuildSwitch(
+                plan.job, [b.name for b in plan.builds], chosen, self.choose_build
+            )
+            self._switches[plan.job] = switch
+            rows.addWidget(switch)
+        return section
+
+    def build_jobs(self) -> list:
+        """The jobs with a build to choose, in the guide's order; a Beginner's class is
+        chosen in the tab, when it's time."""
+        return [p for p in self._data.jobs.values() if p.tier > 0 and len(p.builds) > 1]
+
+    def choose_build(self, job: str, name: str) -> None:
+        """Make `name` the build for `job`, reached or not; the tab follows at once."""
+        if self._choices().get(job) == name and job != self._plan_job:
+            return
+        self._choices()[job] = name
+        self._changed()
+        if (switch := self._switches.get(job)) is not None and isValid(switch):
+            switch.show_chosen(name)
+        if job == self._plan_job:
+            self._picking = False
+            self._render_last()
+
     def set_marks(self, on: bool) -> None:
-        """Turn the marks on the game's windows on or off (the menu's item); the tab stays."""
+        """Turn the marks on the game's windows on or off (Settings' checkbox); the tab stays."""
         if self._settings.get("class_marks", True) == on:
             return
         self._settings["class_marks"] = on
@@ -245,23 +339,11 @@ class ClassHelperTool:
     def _plan(self):
         return self._data.plan(self._plan_job) if self._plan_job else None
 
-    def build_names(self) -> list[str]:
-        """The current plan's builds, when there's a choice to make."""
-        plan = self._plan()
-        names = [b.name for b in plan.builds] if plan else []
-        return names if len(names) > 1 else []
-
-    def build_name(self) -> str | None:
-        plan = self._plan()
-        return plan.build(self._choices().get(plan.job)).name if plan else None
-
     def pick_build(self, name: str) -> None:
+        """The tab's own build picker: as in Settings, for the job now played."""
         if self._plan_job is None or not name:
             return
-        self._choices()[self._plan_job] = name
-        self._changed()
-        self._picking = False
-        self._render_last()
+        self.choose_build(self._plan_job, name)
 
     def _asking(self, plan) -> bool:
         """A Beginner's class is theirs to pick: nothing assumed until they do."""
@@ -270,12 +352,6 @@ class ClassHelperTool:
     def _open_builds(self) -> None:
         self._picking = True
         self._render_last()
-
-    def _tell_builds(self) -> None:
-        seen = (self._plan_job, tuple(self.build_names()), self.build_name())
-        if seen != self._builds_seen:
-            self._builds_seen = seen
-            self.builds_changed()
 
     # --- memory -----------------------------------------------------------
 
@@ -326,7 +402,6 @@ class ClassHelperTool:
         items, content = self._items(self._r)
         self._render(items)
         self._draw_marks()
-        self._tell_builds()
         level = self._level
         if self.tab.isVisible():
             self.dot = False
@@ -500,7 +575,7 @@ class ClassHelperTool:
             )
         if kind in {"row", "spot"}:
             _, name, sub, map_id, best, outline = item
-            go = (lambda m=map_id: self._go(m)) if map_id else None
+            go = (lambda m=map_id: self._go(m)) if map_id and self._can_go else None
             hover = None
             if kind == "spot" and map_id:
 

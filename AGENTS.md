@@ -39,17 +39,18 @@ with the identity in `MAPLELENS_SIGN_IDENTITY` (ad-hoc when unset).
   - `readers/` — screenshot → value (`glyphs`, `ocr`, `exp`, `level`, `job`, `map_name`, `minimap_pos` (`read_view`), `stat_window`, `skill_window`, `quest_window`, `quest_tracker` (the game's Quest Helper panel); `read_all` in `__init__`, with `due` / `found` for which windows to read this tick: one that isn't on screen is searched one tick in four, the minimap every tick); numbers via glyph templates, words (map, class, skill names) via the system OCR: `ocr.py` (shared) + `ocr_win.py` / `ocr_mac.py`. The draggable game windows (`window.py`, shared) are read differently: scaled from the window's own corner, digits by correlation with a margin, since exact templates miss at most sub-pixel offsets
   - `gamedata.py` — loads every NPC, monster and item (`data/game.json`, `data/monsters.json`) and the spawn spots (`SpotData`); `data/npc_icons/` — NPC pictures
   - `spot_card.py` — the hover card beside the box (`SpotCard`): a map or NPC picture, its monsters and lines; built from `gamedata.map_card` / `npc_card`
-  - `overlay.py` — the see-through `Layer` and draggable `Box` (its ••• menu button, `attach_menu`), the tab's `Row` (`on_hover` reports the mouse entering and leaving), `paint_box`; `overlay_mac.py` — the macOS panels
+  - `overlay.py` — the see-through `Layer` and draggable `Box` (its ••• menu button, `attach_menu`), the tab's `Row` (`on_hover` reports the mouse entering and leaving), `paint_box`, `FloatingWindow` (History's and Settings' setup: over the game, never taking the keyboard); `overlay_mac.py` — the macOS panels
+  - `settings_window.py` — the Settings window: General (built by the app) and a section per tool (`settings_section()`)
   - `data/maps.json` — the map data; `data/minimaps/` — minimap pictures; `data/item_icons/` — reward item pictures; `data/icon.ico` — the app icon (the exe, Setup and the tray)
   - `data/monsters.json` — each map's monster cap, spawn spots and respawn timers, and monster stats (OSMS ids); `data/map_pictures/`, `data/monster_icons/` — their pictures
   - `data/classes.json` — per-job advice (training maps, AP/SP plans, gear)
   - `data/quests.json` — the quests (the NPCs, monsters and items each quest needs; event quests are left out)
-  - `store.py` — settings file and data folder
+  - `store.py` — settings file and data folder; `clean` puts a wrong saved value back to its default
   - `update.py` — the update check's pure part: GitHub's latest-release reply → `Release`, version compare, digest check (`MAPLELENS_UPDATE_REPO` overrides the repo)
   - `update_mac.py` — the Mac update helper: swaps the app from the downloaded dmg, then relaunches it
   - `reader.py` — the per-tick grab, trim and `read_all` (`read_game`), run here (`InlineReader`) or in a child process (`ProcessReader`)
   - `app.py` — entry point (`uv run maplelens`); also the update check's threads, download and handoff to Setup (`UpdateCheck`), the Windows tray icon (`make_tray`), Hide / Show (`Shown`) and the tick (`Tick`, which keeps `turn` / `seen_at` for that schedule; on the Mac it reads through `ProcessReader`, a helper process macOS doesn't slow, `make_reader`)
-  - `tools/exp_meter/` — the EXP meter: `meter`, `history`, `text`, `ui`
+  - `tools/exp_meter/` — the EXP meter: `meter`, `session` (when a session tracks: `auto` or `manual` Start/Pause/Reset), `history`, `text`, `ui`
   - `tools/path_arrow/` — the path arrow: `maps`, `route`, `camera`, `ui` (the Path tab: search, and a picked monster, item or NPC's places), `places` (its picture rows)
   - `tools/class_helper/` — the class helper: `data`, `plan`, `ui` (the Class tab, the training spot hover card, and the marks on the stat and skill windows)
   - `tools/quest_helper/` — the quest helper: `data`, `plan`, `rewards`, `ui` (the Quests tab, which shows each quest's rewards; the box switches to it while a quest window is open)

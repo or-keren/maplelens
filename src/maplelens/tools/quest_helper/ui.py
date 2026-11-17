@@ -216,6 +216,7 @@ class QuestHelperTool:
         self.open = False  # the quest window is in this reading
         self._settings, self._changed = settings, on_settings_changed
         self._go, self._heading, self._stop, self._hops = go, heading, stop, hops
+        self._can_go = True  # trips can start: the Path tab is on
         self._data = load() if data is None else data
         self._clean()
         self._progress: dict[int, frozenset[Part]] = {}  # done targets, from the panel
@@ -249,6 +250,14 @@ class QuestHelperTool:
         col = QVBoxLayout(self.tab)
         col.setContentsMargins(0, TOP, 0, 0)
         col.addWidget(self._scroll)
+        self._render()
+
+    def set_can_go(self, on: bool) -> None:
+        """Whether a target row's click can start a trip; with Path off it can't."""
+        if on == self._can_go:
+            return
+        self._can_go = on
+        self._shown = None
         self._render()
 
     def set_tab_w(self, width: int) -> None:
@@ -514,7 +523,7 @@ class QuestHelperTool:
             return text_label(item[1], LABEL_PT, LABEL_COLOR)
         if kind == "row":
             _, title, sub, map_id, at, npc, info = item
-            go = (lambda: self._go_to(map_id, at, npc)) if map_id else None
+            go = (lambda: self._go_to(map_id, at, npc)) if map_id and self._can_go else None
             row = Row(title, sub, go, info=info, width=self._tab_w)
             row.setToolTip(sub)  # the sub-line is cut to fit
             return row
